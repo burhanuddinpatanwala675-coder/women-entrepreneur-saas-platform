@@ -1,0 +1,26 @@
+# Backend
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/uploads/*
+!backend/uploads/.gitkeep
+backend/uvicorn.log
+backend/smoke_test.sh
+*.pyc
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/vite.log
+
+# Env
+.env
+*.env.local
+
+# Screenshots / scratch
+screenshots/
+screenshot_test*.py
+screenshot_admin.py
+
+# OS
+.DS_Store
