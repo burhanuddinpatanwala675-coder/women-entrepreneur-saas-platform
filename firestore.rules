@@ -303,7 +303,21 @@ service cloud.firestore {
     // ================================================================================
     match /subscriptions/{businessId} {
       allow read: if isOwnerOrAdmin(businessId);
-      allow create: if isOwnerOrAdmin(businessId) && request.resource.data.plan == "free";
+
+      // Created inside the SAME client transaction that creates businesses/{businessId}
+      // (see OnboardingWizard.tsx's createBusinessWithUniqueSlug) — at rule-evaluation
+      // time, isOwnerOrAdmin(businessId) would still see the caller's pre-transaction
+      // users/{uid}.businessId (null, since that claim is a separate write in the same
+      // transaction), so it can never pass here. getAfter() sees the transaction's end
+      // state instead, which is what actually needs checking: does the business this
+      // subscription belongs to end up owned by the caller.
+      allow create: if isSignedIn() && request.resource.data.plan == "free" && (
+        isAdmin() ||
+        (
+          existsAfter(/databases/$(database)/documents/businesses/$(businessId)) &&
+          getAfter(/databases/$(database)/documents/businesses/$(businessId)).data.ownerUserId == request.auth.uid
+        )
+      );
       allow update, delete: if false;
     }
     match /payments/{paymentId} {
