@@ -42,9 +42,6 @@
       { "fieldPath": "businessId", "order": "ASCENDING" },
       { "fieldPath": "createdAt", "order": "DESCENDING" }
     ]},
-    { "collectionGroup": "giftCards", "queryScope": "COLLECTION", "fields": [
-      { "fieldPath": "code", "order": "ASCENDING" }
-    ]},
     { "collectionGroup": "notifications", "queryScope": "COLLECTION", "fields": [
       { "fieldPath": "userId", "order": "ASCENDING" },
       { "fieldPath": "createdAt", "order": "DESCENDING" }
