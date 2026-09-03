@@ -1,8 +1,25 @@
 import { useEffect, useState } from 'react'
-import { api, ApiError } from '@/api/client'
-import type { Product, ProductStatus, ProductVariant } from '@/api/types'
+import {
+  collection,
+  deleteDoc,
+  doc,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  where,
+} from 'firebase/firestore'
+import { db } from '@/firebase/client'
+import { uploadImage } from '@/cloudinary/upload'
+import { slugify } from '@/firebase/slugify'
+import { getFirebaseErrorMessage } from '@/firebase/errors'
+import type { ProductDoc, ProductImage, ProductStatus, ProductVariant } from '@/firebase/types'
+import { useAuth } from '@/auth/AuthContext'
 import { PageHeader } from '@/components/SellerLayout'
 import { Badge, Banner, Button, Card, EmptyState, Input, Label, Modal, Textarea } from '@/components/ui'
+
+type Product = ProductDoc & { id: string }
 
 const STATUS_TONE: Record<ProductStatus, 'green' | 'amber' | 'red' | 'gray'> = {
   available: 'green',
@@ -19,36 +36,53 @@ const STATUS_LABEL: Record<ProductStatus, string> = {
   hidden: 'Hidden',
 }
 
+function computeStockStatus(stock: number, lowStockThreshold: number): ProductStatus {
+  if (stock <= 0) return 'out_of_stock'
+  if (stock <= lowStockThreshold) return 'low_stock'
+  return 'available'
+}
+
 export default function ProductsPage() {
+  const { user } = useAuth()
+  const businessId = user!.businessId!
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<ProductStatus | 'all'>('all')
   const [editing, setEditing] = useState<Product | 'new' | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
-  function load() {
-    setLoading(true)
-    api
-      .get<Product[]>('/products')
-      .then(setProducts)
-      .finally(() => setLoading(false))
-  }
-
-  useEffect(load, [])
+  useEffect(() => {
+    const q = query(collection(db, 'products'), where('businessId', '==', businessId))
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as ProductDoc) }))
+        items.sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0))
+        setProducts(items)
+        setLoading(false)
+      },
+      (err) => {
+        setError(getFirebaseErrorMessage(err))
+        setLoading(false)
+      },
+    )
+    return unsub
+  }, [businessId])
 
   const filtered = filter === 'all' ? products : products.filter((p) => p.status === filter)
 
   async function markSold(p: Product) {
-    const updated = await api.post<Product>(`/products/${p.id}/mark-sold`)
-    setProducts((prev) => prev.map((x) => (x.id === updated.id ? updated : x)))
+    await updateDoc(doc(db, 'products', p.id), { status: 'sold', updatedAt: serverTimestamp() })
   }
   async function reactivate(p: Product) {
-    const updated = await api.post<Product>(`/products/${p.id}/reactivate`)
-    setProducts((prev) => prev.map((x) => (x.id === updated.id ? updated : x)))
+    await updateDoc(doc(db, 'products', p.id), {
+      status: computeStockStatus(p.stockQuantity, p.lowStockThreshold),
+      updatedAt: serverTimestamp(),
+    })
   }
   async function remove(p: Product) {
     if (!confirm(`Delete "${p.name}"? This cannot be undone.`)) return
-    await api.del(`/products/${p.id}`)
-    setProducts((prev) => prev.filter((x) => x.id !== p.id))
+    await deleteDoc(doc(db, 'products', p.id))
   }
 
   return (
@@ -58,6 +92,12 @@ export default function ProductsPage() {
         subtitle={`${products.length} product${products.length === 1 ? '' : 's'}`}
         action={<Button onClick={() => setEditing('new')}>+ Add Product</Button>}
       />
+
+      {error && (
+        <div className="mb-4">
+          <Banner tone="danger">{error}</Banner>
+        </div>
+      )}
 
       <div className="mb-4 flex gap-2 overflow-x-auto pb-1">
         {(['all', 'available', 'low_stock', 'out_of_stock', 'sold', 'hidden'] as const).map((s) => (
@@ -97,8 +137,8 @@ export default function ProductsPage() {
                 <div className="p-3">
                   <p className="truncate text-sm font-semibold text-ink-900">{p.name}</p>
                   <p className="mt-0.5 text-sm text-ink-700">
-                    Rs. {(p.sale_price ?? p.price).toLocaleString()}
-                    {p.sale_price && <span className="ml-1.5 text-xs text-ink-300 line-through">Rs. {p.price.toLocaleString()}</span>}
+                    Rs. {(p.salePrice ?? p.price).toLocaleString()}
+                    {p.salePrice && <span className="ml-1.5 text-xs text-ink-300 line-through">Rs. {p.price.toLocaleString()}</span>}
                   </p>
                   <Badge tone={STATUS_TONE[p.status]} className="mt-2">
                     {STATUS_LABEL[p.status]}
@@ -126,27 +166,35 @@ export default function ProductsPage() {
 
       {editing && (
         <ProductEditor
+          businessId={businessId}
           product={editing === 'new' ? null : editing}
           onClose={() => setEditing(null)}
-          onSaved={(saved) => {
-            setProducts((prev) => (editing === 'new' ? [saved, ...prev] : prev.map((p) => (p.id === saved.id ? saved : p))))
-            setEditing(null)
-          }}
+          onSaved={() => setEditing(null)}
         />
       )}
     </div>
   )
 }
 
-function ProductEditor({ product, onClose, onSaved }: { product: Product | null; onClose: () => void; onSaved: (p: Product) => void }) {
+function ProductEditor({
+  businessId,
+  product,
+  onClose,
+  onSaved,
+}: {
+  businessId: string
+  product: Product | null
+  onClose: () => void
+  onSaved: () => void
+}) {
   const [name, setName] = useState(product?.name ?? '')
   const [description, setDescription] = useState(product?.description ?? '')
   const [price, setPrice] = useState(product?.price?.toString() ?? '')
-  const [salePrice, setSalePrice] = useState(product?.sale_price?.toString() ?? '')
+  const [salePrice, setSalePrice] = useState(product?.salePrice?.toString() ?? '')
   const [sku, setSku] = useState(product?.sku ?? '')
-  const [stock, setStock] = useState(product?.stock_quantity?.toString() ?? '0')
+  const [stock, setStock] = useState(product?.stockQuantity?.toString() ?? '0')
   const [tags, setTags] = useState(product?.tags?.join(', ') ?? '')
-  const [images, setImages] = useState(product?.images ?? [])
+  const [images, setImages] = useState<ProductImage[]>(product?.images ?? [])
   const [variants, setVariants] = useState<ProductVariant[]>(product?.variants ?? [])
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -156,64 +204,67 @@ function ProductEditor({ product, onClose, onSaved }: { product: Product | null;
     const file = e.target.files?.[0]
     if (!file) return
     setUploading(true)
+    setError(null)
     try {
-      const { url } = await api.upload<{ url: string }>('/uploads/image', file)
-      if (product) {
-        const updated = await api.post<Product>(`/products/${product.id}/images?url=${encodeURIComponent(url)}&is_primary=${images.length === 0}`)
-        setImages(updated.images)
-      } else {
-        setImages((prev) => [...prev, { id: `local-${Date.now()}`, url, sort_order: prev.length, is_primary: prev.length === 0 }])
-      }
+      const folder = `products/${businessId}/${product?.id ?? 'new-' + Date.now()}`
+      const uploaded = await uploadImage(file, folder)
+      setImages((prev) => [
+        ...prev,
+        { url: uploaded.url, cloudinaryPublicId: uploaded.publicId, sortOrder: prev.length, isPrimary: prev.length === 0 },
+      ])
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not upload image')
+      setError(getFirebaseErrorMessage(err))
     } finally {
       setUploading(false)
     }
   }
 
+  function removeImage(idx: number) {
+    setImages((prev) => prev.filter((_, i) => i !== idx).map((img, i) => ({ ...img, sortOrder: i, isPrimary: i === 0 })))
+  }
+
   function addVariantRow() {
-    setVariants((prev) => [...prev, { id: `local-${Date.now()}`, name: '', option_values: {}, stock_quantity: 0 }])
+    setVariants((prev) => [
+      ...prev,
+      { id: `v-${Date.now()}-${prev.length}`, name: '', optionValues: {}, price: null, stockQuantity: 0, sku: null },
+    ])
   }
 
   async function save() {
     setError(null)
     setSaving(true)
     try {
+      const stockNum = Number(stock) || 0
+      const priceNum = Number(price)
+      const preserveManualStatus = product && (product.status === 'sold' || product.status === 'hidden')
+      const status: ProductStatus = preserveManualStatus ? product!.status : computeStockStatus(stockNum, product?.lowStockThreshold ?? 3)
+
       const payload = {
+        businessId,
+        categoryId: product?.categoryId ?? null,
         name,
+        slug: product?.slug ?? slugify(name),
         description: description || null,
-        price: Number(price),
-        sale_price: salePrice ? Number(salePrice) : null,
+        price: priceNum,
+        salePrice: salePrice ? Number(salePrice) : null,
         sku: sku || null,
-        stock_quantity: Number(stock) || 0,
+        stockQuantity: stockNum,
+        status,
+        lowStockThreshold: product?.lowStockThreshold ?? 3,
         tags: tags.split(',').map((t) => t.trim()).filter(Boolean),
+        images,
+        variants,
+        updatedAt: serverTimestamp(),
       }
-      let saved: Product
+
       if (product) {
-        saved = await api.patch<Product>(`/products/${product.id}`, payload)
+        await updateDoc(doc(db, 'products', product.id), payload)
       } else {
-        saved = await api.post<Product>('/products', { ...payload, images: images.map((i) => ({ url: i.url, is_primary: i.is_primary })) })
+        await setDoc(doc(collection(db, 'products')), { ...payload, createdAt: serverTimestamp() })
       }
-
-      // Sync variants for existing products (create new ones added in this session)
-      if (product) {
-        for (const v of variants) {
-          if (v.id.startsWith('local-')) {
-            await api.post(`/products/${product.id}/variants`, {
-              name: v.name,
-              option_values: v.option_values,
-              price: v.price || null,
-              stock_quantity: v.stock_quantity,
-              sku: v.sku || null,
-            })
-          }
-        }
-        saved = await api.get<Product>(`/products/${product.id}`)
-      }
-
-      onSaved(saved)
+      onSaved()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not save product')
+      setError(getFirebaseErrorMessage(err))
     } finally {
       setSaving(false)
     }
@@ -227,8 +278,16 @@ function ProductEditor({ product, onClose, onSaved }: { product: Product | null;
         <div>
           <Label>Photos</Label>
           <div className="flex flex-wrap gap-2">
-            {images.map((img) => (
-              <img key={img.id} src={img.url} className="h-16 w-16 rounded-lg object-cover" />
+            {images.map((img, i) => (
+              <div key={img.cloudinaryPublicId || i} className="relative">
+                <img src={img.url} className="h-16 w-16 rounded-lg object-cover" />
+                <button
+                  onClick={() => removeImage(i)}
+                  className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-ink-900 text-xs text-white"
+                >
+                  ✕
+                </button>
+              </div>
             ))}
             <label className="flex h-16 w-16 cursor-pointer items-center justify-center rounded-lg border-2 border-dashed border-ink-300 text-xl">
               {uploading ? '…' : '+'}
@@ -268,36 +327,37 @@ function ProductEditor({ product, onClose, onSaved }: { product: Product | null;
           <Input id="e-tags" value={tags} onChange={(e) => setTags(e.target.value)} placeholder="lawn, black, festive" />
         </div>
 
-        {product && (
-          <div>
-            <div className="mb-1.5 flex items-center justify-between">
-              <Label className="mb-0">Variants (size, color, etc.)</Label>
-              <button onClick={addVariantRow} className="text-sm font-semibold text-brand-600">
-                + Add variant
-              </button>
-            </div>
-            <div className="space-y-2">
-              {variants.map((v, i) => (
-                <div key={v.id} className="flex gap-2">
-                  <Input
-                    placeholder="e.g. Medium / Black"
-                    value={v.name}
-                    onChange={(e) => setVariants((prev) => prev.map((x, idx) => (idx === i ? { ...x, name: e.target.value } : x)))}
-                  />
-                  <Input
-                    type="number"
-                    placeholder="Stock"
-                    className="w-24"
-                    value={v.stock_quantity}
-                    onChange={(e) =>
-                      setVariants((prev) => prev.map((x, idx) => (idx === i ? { ...x, stock_quantity: Number(e.target.value) } : x)))
-                    }
-                  />
-                </div>
-              ))}
-            </div>
+        <div>
+          <div className="mb-1.5 flex items-center justify-between">
+            <Label className="mb-0">Variants (size, color, etc.)</Label>
+            <button onClick={addVariantRow} className="text-sm font-semibold text-brand-600">
+              + Add variant
+            </button>
           </div>
-        )}
+          <div className="space-y-2">
+            {variants.map((v, i) => (
+              <div key={v.id} className="flex gap-2">
+                <Input
+                  placeholder="e.g. Medium / Black"
+                  value={v.name}
+                  onChange={(e) => setVariants((prev) => prev.map((x, idx) => (idx === i ? { ...x, name: e.target.value } : x)))}
+                />
+                <Input
+                  type="number"
+                  placeholder="Stock"
+                  className="w-24"
+                  value={v.stockQuantity}
+                  onChange={(e) =>
+                    setVariants((prev) => prev.map((x, idx) => (idx === i ? { ...x, stockQuantity: Number(e.target.value) } : x)))
+                  }
+                />
+                <Button size="sm" variant="ghost" onClick={() => setVariants((prev) => prev.filter((_, idx) => idx !== i))}>
+                  ✕
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
 
         <Button fullWidth loading={saving} disabled={!name.trim() || !price} onClick={save}>
           {product ? 'Save changes' : 'Add product'}
@@ -306,4 +366,3 @@ function ProductEditor({ product, onClose, onSaved }: { product: Product | null;
     </Modal>
   )
 }
-

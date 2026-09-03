@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react'
-import { api, ApiError } from '@/api/client'
-import type { Business, BusinessTemplate, StoreSettings } from '@/api/types'
+import { doc, onSnapshot, serverTimestamp, updateDoc } from 'firebase/firestore'
+import { db } from '@/firebase/client'
+import { uploadImage } from '@/cloudinary/upload'
+import { getFirebaseErrorMessage } from '@/firebase/errors'
+import type { BusinessDoc, BusinessTemplate } from '@/firebase/types'
+import { useAuth } from '@/auth/AuthContext'
 import { PageHeader } from '@/components/SellerLayout'
 import { Banner, Button, Card, Input, Label, Textarea } from '@/components/ui'
 
@@ -13,60 +17,66 @@ const TEMPLATES: { key: BusinessTemplate; label: string; emoji: string }[] = [
 ]
 
 export default function StoreSettingsPage() {
-  const [business, setBusiness] = useState<Business | null>(null)
-  const [settings, setSettings] = useState<StoreSettings | null>(null)
+  const { user } = useAuth()
+  const businessId = user!.businessId!
+  const [business, setBusiness] = useState<(BusinessDoc & { id: string }) | null>(null)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [uploadingLogo, setUploadingLogo] = useState(false)
+  const [uploadingCover, setUploadingCover] = useState(false)
 
   useEffect(() => {
-    Promise.all([api.get<Business>('/businesses/me'), api.get<StoreSettings>('/businesses/me/store-settings')]).then(([b, s]) => {
-      setBusiness(b)
-      setSettings(s)
+    const unsub = onSnapshot(doc(db, 'businesses', businessId), (snap) => {
+      if (snap.exists()) setBusiness({ id: snap.id, ...(snap.data() as BusinessDoc) })
     })
-  }, [])
+    return unsub
+  }, [businessId])
 
-  async function uploadTo(field: 'logo_url' | 'cover_image_url', file: File) {
-    const { url } = await api.upload<{ url: string }>('/uploads/image', file)
-    setBusiness((prev) => (prev ? { ...prev, [field]: url } : prev))
+  async function uploadTo(field: 'logoUrl' | 'coverImageUrl', file: File) {
+    const setUploading = field === 'logoUrl' ? setUploadingLogo : setUploadingCover
+    setUploading(true)
+    setError(null)
+    try {
+      const uploaded = await uploadImage(file, `businesses/${businessId}`)
+      setBusiness((prev) => (prev ? { ...prev, [field]: uploaded.url } : prev))
+    } catch (err) {
+      setError(getFirebaseErrorMessage(err))
+    } finally {
+      setUploading(false)
+    }
   }
 
   async function save() {
-    if (!business || !settings) return
+    if (!business) return
     setError(null)
     setSaving(true)
     setSaved(false)
     try {
-      const updatedBusiness = await api.patch<Business>('/businesses/me', {
+      await updateDoc(doc(db, 'businesses', businessId), {
         name: business.name,
-        short_description: business.short_description,
-        logo_url: business.logo_url,
-        cover_image_url: business.cover_image_url,
-        whatsapp_number: business.whatsapp_number,
-        contact_email: business.contact_email,
-        contact_phone: business.contact_phone,
-        social_links: business.social_links,
+        shortDescription: business.shortDescription,
+        logoUrl: business.logoUrl,
+        coverImageUrl: business.coverImageUrl,
+        whatsappNumber: business.whatsappNumber,
+        contactEmail: business.contactEmail,
+        contactPhone: business.contactPhone,
+        socialLinks: business.socialLinks,
         template: business.template,
+        storeSettings: business.storeSettings,
+        updatedAt: serverTimestamp(),
       })
-      const updatedSettings = await api.patch<StoreSettings>('/businesses/me/store-settings', {
-        accent_color: settings.accent_color,
-        cod_enabled: settings.cod_enabled,
-        manual_payment_instructions: settings.manual_payment_instructions,
-        announcement_banner: settings.announcement_banner,
-      })
-      setBusiness(updatedBusiness)
-      setSettings(updatedSettings)
       setSaved(true)
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not save your store settings')
+      setError(getFirebaseErrorMessage(err))
     } finally {
       setSaving(false)
     }
   }
 
-  if (!business || !settings) return <p className="py-10 text-center text-ink-500">Loading…</p>
+  if (!business) return <p className="py-10 text-center text-ink-500">Loading…</p>
 
-  const storeUrl = `${window.location.origin}${business.storefront_path}`
+  const storeUrl = `${window.location.origin}/store/${business.id}`
 
   return (
     <div className="mx-auto max-w-2xl">
@@ -98,18 +108,26 @@ export default function StoreSettingsPage() {
       <Card className="mb-4 p-5">
         <h2 className="mb-3 font-semibold text-ink-900">Look &amp; feel</h2>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          {[
-            { field: 'logo_url' as const, label: 'Logo' },
-            { field: 'cover_image_url' as const, label: 'Cover photo' },
-          ].map(({ field, label }) => (
+          {(
+            [
+              { field: 'logoUrl' as const, label: 'Logo', uploading: uploadingLogo },
+              { field: 'coverImageUrl' as const, label: 'Cover photo', uploading: uploadingCover },
+            ]
+          ).map(({ field, label, uploading }) => (
             <label key={field} className="col-span-1 flex cursor-pointer flex-col items-center gap-2 rounded-xl border-2 border-dashed border-ink-300 p-3 text-center">
               {business[field] ? (
                 <img src={business[field] as string} className="h-16 w-16 rounded-lg object-cover" />
               ) : (
-                <span className="text-2xl">🖼️</span>
+                <span className="text-2xl">{uploading ? '…' : '🖼️'}</span>
               )}
               <span className="text-xs font-medium text-ink-700">{label}</span>
-              <input type="file" accept="image/*" className="hidden" onChange={(e) => e.target.files?.[0] && uploadTo(field, e.target.files[0])} />
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                disabled={uploading}
+                onChange={(e) => e.target.files?.[0] && uploadTo(field, e.target.files[0])}
+              />
             </label>
           ))}
         </div>
@@ -141,14 +159,21 @@ export default function StoreSettingsPage() {
           </div>
           <div>
             <Label htmlFor="s-desc">Short description</Label>
-            <Textarea id="s-desc" rows={3} value={business.short_description ?? ''} onChange={(e) => setBusiness({ ...business, short_description: e.target.value })} />
+            <Textarea
+              id="s-desc"
+              rows={3}
+              value={business.shortDescription ?? ''}
+              onChange={(e) => setBusiness({ ...business, shortDescription: e.target.value })}
+            />
           </div>
           <div>
             <Label htmlFor="s-announce">Announcement banner (optional)</Label>
             <Input
               id="s-announce"
-              value={settings.announcement_banner ?? ''}
-              onChange={(e) => setSettings({ ...settings, announcement_banner: e.target.value })}
+              value={business.storeSettings.announcementBanner ?? ''}
+              onChange={(e) =>
+                setBusiness({ ...business, storeSettings: { ...business.storeSettings, announcementBanner: e.target.value } })
+              }
               placeholder="e.g. Free delivery on orders above Rs. 3,000"
             />
           </div>
@@ -162,22 +187,22 @@ export default function StoreSettingsPage() {
             <Label htmlFor="s-wa">WhatsApp number (with country code)</Label>
             <Input
               id="s-wa"
-              value={business.whatsapp_number ?? ''}
-              onChange={(e) => setBusiness({ ...business, whatsapp_number: e.target.value })}
+              value={business.whatsappNumber ?? ''}
+              onChange={(e) => setBusiness({ ...business, whatsappNumber: e.target.value })}
               placeholder="923001234567"
             />
             <p className="mt-1 text-xs text-ink-500">Customers will message this number when they tap "Order on WhatsApp".</p>
           </div>
           <div>
             <Label htmlFor="s-email">Contact email (optional)</Label>
-            <Input id="s-email" value={business.contact_email ?? ''} onChange={(e) => setBusiness({ ...business, contact_email: e.target.value })} />
+            <Input id="s-email" value={business.contactEmail ?? ''} onChange={(e) => setBusiness({ ...business, contactEmail: e.target.value })} />
           </div>
           <div>
             <Label htmlFor="s-instagram">Instagram (optional)</Label>
             <Input
               id="s-instagram"
-              value={business.social_links?.instagram ?? ''}
-              onChange={(e) => setBusiness({ ...business, social_links: { ...business.social_links, instagram: e.target.value } })}
+              value={business.socialLinks?.instagram ?? ''}
+              onChange={(e) => setBusiness({ ...business, socialLinks: { ...business.socialLinks, instagram: e.target.value } })}
               placeholder="@yourbusiness"
             />
           </div>
@@ -190,8 +215,8 @@ export default function StoreSettingsPage() {
           <input
             type="checkbox"
             className="h-5 w-5 rounded"
-            checked={settings.cod_enabled}
-            onChange={(e) => setSettings({ ...settings, cod_enabled: e.target.checked })}
+            checked={business.storeSettings.codEnabled}
+            onChange={(e) => setBusiness({ ...business, storeSettings: { ...business.storeSettings, codEnabled: e.target.checked } })}
           />
           <span className="text-sm text-ink-700">Accept Cash on Delivery</span>
         </label>
@@ -200,8 +225,10 @@ export default function StoreSettingsPage() {
           <Textarea
             id="s-manual"
             rows={2}
-            value={settings.manual_payment_instructions ?? ''}
-            onChange={(e) => setSettings({ ...settings, manual_payment_instructions: e.target.value })}
+            value={business.storeSettings.manualPaymentInstructions ?? ''}
+            onChange={(e) =>
+              setBusiness({ ...business, storeSettings: { ...business.storeSettings, manualPaymentInstructions: e.target.value } })
+            }
             placeholder="e.g. Bank transfer to Meezan Bank, Acc# 0123456789"
           />
         </div>

@@ -1,8 +1,10 @@
 import { createContext, useContext } from 'react'
-import type { PublicBusiness } from '@/api/types'
+import type { BusinessDoc } from '@/firebase/types'
+
+export type StorefrontBusiness = BusinessDoc & { id: string; categoryName: string | null }
 
 export interface StorefrontContextValue {
-  business: PublicBusiness
+  business: StorefrontBusiness
   slug: string
 }
 

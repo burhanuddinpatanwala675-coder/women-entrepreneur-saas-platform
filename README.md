@@ -4,98 +4,106 @@
 
 A mobile-first, multi-tenant SaaS platform that helps women entrepreneurs create and run
 an online business: store, products, WhatsApp ordering, vouchers, and gift cards — no
-technical knowledge required.
+technical knowledge required, and no bill to pay to run it.
 
-See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for the full system design: database schema,
-user flows, page-by-page structure, API reference, folder structure, and the phase-by-phase
-build plan. This README is only about running the project.
+See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for the full system design: data model,
+Security Rules strategy, user flows, page-by-page structure, folder structure, and the
+phase-by-phase build plan. This README is only about running the project.
 
 ## What's built
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1 — Foundation | Auth, multi-tenancy, DB schema, seller onboarding | ✅ |
+| 1 — Foundation | Auth, multi-tenancy, seller onboarding | ✅ |
 | 2 — Store Builder | Business profile, storefront, products, categories, variants | ✅ |
 | 3 — Selling | Cart, WhatsApp ordering, order management, Mark as Sold | ✅ |
 | 4 — Customer Tools | Customer CRM, vouchers, gift cards | ✅ |
-| 5 — Intelligence | AI assistant architecture + endpoint | ✅ (needs an API key — see below) |
+| 5 — Intelligence | AI assistant architecture | ✅ (parked — see below) |
 | 6 — Platform Admin | Admin dashboard, seller management, categories, analytics | ✅ |
 
-Every button in the product either works end-to-end against the real database, or —
-in the one case where it depends on a credential you haven't added yet (the AI
-Assistant) — clearly says so instead of faking a result.
+Every button in the product either works end-to-end against real Firestore data, or — in
+the one case where it depends on infrastructure this build deliberately doesn't have (the
+AI Assistant) — clearly says so instead of faking a result. See ARCHITECTURE.md's
+migration note for exactly why.
 
-## Stack
+## Stack — and why there's nothing to pay for
 
-- **Backend**: FastAPI (Python), SQLAlchemy 2.0, Alembic migrations, PostgreSQL, JWT auth
-- **Frontend**: React 19 + TypeScript, Vite, Tailwind CSS v4, React Router
-- **Storage**: local disk in dev, behind a `StorageProvider` interface so S3 drops in later
-- **AI**: behind an `AIProvider` interface — ships as "not configured" until you add a key
+- **Data & multi-tenancy**: Cloud Firestore, on Firebase's free **Spark** plan. No
+  database to provision, back up, or pay for.
+- **Auth**: Firebase Authentication (email/password), Spark/free.
+- **Hosting**: Firebase Hosting, Spark/free.
+- **Images**: **Cloudinary**'s free tier (product photos, logo, cover image) — confirmed
+  no credit card required at signup, uploaded directly from the browser.
+- **No backend server, no Cloud Functions.** Every write — including a customer placing an
+  order on a public storefront with no account — goes straight from the browser to
+  Firestore inside a transaction, validated entirely by `firestore.rules`. See
+  ARCHITECTURE.md section 3 for exactly how that's made safe with no trusted server code.
+- **No credit card is required anywhere in this setup.** That was a deliberate,
+  non-negotiable requirement for this build — not an oversight. Two things that would
+  normally seem free-tier-friendly are explicitly avoided because Google/Firebase require
+  a billing card on file to enable them at all (even at $0 actual usage): **Cloud
+  Functions** and, as of a late-2024 policy change, **Firebase Storage**. Both are worked
+  around — see ARCHITECTURE.md's migration note.
 
-## Prerequisites
+## 1. Create your Firebase project (free, no card)
 
-- Python 3.11+
-- Node.js 20+
-- PostgreSQL 14+ running locally (or point `DATABASE_URL` at any Postgres instance)
+1. Go to [console.firebase.google.com](https://console.firebase.google.com) → **Add
+   project** → name it → you can decline Google Analytics, it isn't used.
+2. **Build → Authentication → Get started → Email/Password → enable.**
+3. **Build → Firestore Database → Create database → Production mode** → pick a region
+   close to your users (e.g. `asia-south1`) — this can't be changed later.
+4. **Project settings** (gear icon) **→ General → Your apps → add a Web app** (`</>`) →
+   copy the `firebaseConfig` values it shows you.
+5. Deploy the Security Rules and indexes from this repo (one-time, from your own machine):
+   ```bash
+   npm install -g firebase-tools
+   firebase login
+   firebase deploy --only firestore:rules,firestore:indexes
+   ```
+   (`firebase.json` has no `functions` or `storage` target, so this never asks about
+   Blaze.)
+6. Seed the starter category tree + AI-assistant status doc:
+   ```bash
+   cd scripts
+   npm install
+   # Get a service account key: Firebase Console -> Project settings -> Service accounts
+   # -> Generate new private key. Keep it out of git.
+   GOOGLE_APPLICATION_CREDENTIALS=./service-account.json npm run seed
+   ```
 
-## 1. Database
+## 2. Create your Cloudinary account (free, no card) — for image uploads
 
-```bash
-sudo -u postgres psql -c "CREATE USER hercommerce WITH PASSWORD 'hercommerce_dev_pw';"
-sudo -u postgres psql -c "CREATE DATABASE hercommerce OWNER hercommerce;"
-```
+1. Sign up at [cloudinary.com](https://cloudinary.com) (free plan, no card).
+2. Note your **Cloud name**, shown on the dashboard home.
+3. **Settings → Upload → Upload presets → Add upload preset**:
+   - Signing mode: **Unsigned**
+   - Folder: leave blank (the app sets a per-product folder itself) or set a base folder
+   - Optionally cap file size / restrict formats to images only
+   - Save, and note the **preset name**.
 
-## 2. Backend
-
-```bash
-cd backend
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-cp ../.env.example ../.env   # edit as needed — defaults work for local Postgres above
-
-alembic upgrade head              # creates all tables
-python -m app.seed.seed_categories  # seeds the starter category tree
-
-uvicorn app.main:app --reload --port 8000
-```
-
-API docs (auto-generated): http://localhost:8000/docs
-
-### Environment variables (`.env` at the repo root)
-
-| Variable | Purpose |
-|---|---|
-| `DATABASE_URL` | Postgres connection string |
-| `JWT_SECRET_KEY` | Change this in production |
-| `UPLOAD_DIR` / `UPLOAD_BASE_URL` | Local image storage (dev). Switch `STORAGE_PROVIDER=s3` + fill `S3_*` to move to object storage later — no endpoint code changes needed. |
-| `AI_PROVIDER` / `AI_API_KEY` | Leave `AI_PROVIDER=none` to keep the AI Assistant honestly showing "not configured". Set to `openai` + a key once you've implemented `OpenAIProvider.generate_product_content` in `app/services/ai_provider.py`. |
-| `CORS_ORIGINS` | Comma-separated list of allowed frontend origins |
-
-## 3. Frontend
+## 3. Configure and run the frontend
 
 ```bash
 cd frontend
+cp .env.example .env   # fill in the Firebase config values + Cloudinary cloud name/preset
 npm install
 npm run dev
 ```
 
-Runs at http://localhost:5173. `frontend/.env` points it at the backend
-(`VITE_API_BASE_URL`) — update this for a non-local backend.
+Runs at http://localhost:5173.
 
 ## 4. Try it out
 
-1. Go to http://localhost:5173, click **Create my free store**, sign up.
+1. Click **Create my free store**, sign up (email + password).
 2. Complete the 4-step onboarding wizard (pick a category, name your business, add a
-   product, done).
+   product with a photo, done).
 3. From the dashboard, set your WhatsApp number under **Store**.
-4. Open your storefront link (shown on the "Your store is ready!" screen and in
-   **Store** settings) in a new tab.
-5. Add the product to cart or tap **Buy / Order on WhatsApp** — this creates a real
-   order and generates a `wa.me` deep link pre-filled with the order details.
-6. Back in the dashboard, the order appears under **Orders**; move it through the
-   fulfillment stages.
+4. Open your storefront link (shown on the "Your store is ready!" screen) in a new tab.
+5. Add the product to cart or tap **Buy / Order on WhatsApp** — this creates a real order
+   directly in Firestore (no backend involved) and generates a `wa.me` deep link pre-filled
+   with the order details.
+6. Back in the dashboard, the order appears under **Orders** in real time; move it through
+   the fulfillment stages.
 7. Try **Mark as Sold** on a product — the storefront immediately shows "SOLD OUT" and
    disables ordering; **Reactivate** brings it back.
 8. Create a voucher under **Vouchers** and apply its code at checkout.
@@ -104,41 +112,42 @@ Runs at http://localhost:5173. `frontend/.env` points it at the backend
 
 ### Becoming a platform admin
 
-There's no public sign-up path to the admin role (by design). Promote an existing
-account directly in the database:
-
-```sql
-UPDATE users SET role = 'platform_admin' WHERE email = 'you@example.com';
-```
-
-Then visit http://localhost:5173/admin.
+There's no public sign-up path to the admin role (by design). Promote an existing account
+directly in the Firebase console: **Firestore Database → `users` collection → your
+document → set `role` to `"platform_admin"`.** Then visit http://localhost:5173/admin.
 
 ## Project layout
 
 ```
 hercommerce/
-├── ARCHITECTURE.md       # full system design — read this first
-├── backend/               # FastAPI app (see backend/app/)
-└── frontend/              # React + TypeScript app (see frontend/src/)
+├── ARCHITECTURE.md            # full system design — read this first
+├── firebase.json / firestore.rules / firestore.indexes.json
+├── functions/                  # AI Assistant only — real code, NOT deployed (needs Blaze)
+├── scripts/seed.ts             # one-off category-tree seeder (plain Node script)
+├── legacy-postgres-backend/    # the original FastAPI/Postgres backend — reference only
+└── frontend/                   # React + TypeScript app (see frontend/src/)
 ```
 
-See `ARCHITECTURE.md` → **Folder Structure** for the full breakdown of both apps.
+See `ARCHITECTURE.md` → **Folder Structure** for the full breakdown.
 
 ## Notes on what's intentionally simplified for the MVP
 
 - **Payments**: Cash on Delivery and seller-configured manual payment instructions only.
-  A `Payment` model and `payments` table already exist for when a real payment gateway is
-  added — no schema change needed, just a `PaymentProvider` implementation.
+  A `payments` collection already exists for when a real gateway is added.
 - **WhatsApp**: uses standard `wa.me` deep links (no API keys or business account
   approval required). The order message format already carries every field a WhatsApp
   Business Cloud API template message would need, so upgrading later changes *how* the
   message is sent, not the data model.
-- **AI Assistant**: architecture is real (provider interface, status endpoint, generation
-  endpoint, frontend UI with a proper "needs configuration" state) but no AI provider is
-  wired up, per the platform's "never fake functionality" rule. Implement
-  `OpenAIProvider` (or another provider) in `backend/app/services/ai_provider.py` to turn
-  it on.
+- **AI Assistant**: architecture is real (`functions/src/services/aiProvider.ts`, a
+  frontend page with a proper "needs configuration" state) but intentionally not
+  deployed, since deploying it requires the Blaze plan this build otherwise avoids
+  entirely. Revisit only if a $0-bill Blaze plan is ever acceptable for that one feature —
+  see `functions/README.md`.
 - **Product editor**: add/edit is a modal rather than a separate page, and variants are
-  added inline — this keeps the "add a product" flow to a handful of taps, in line with
-  the platform's core simplicity requirement, while still supporting everything the spec
-  asks for (multiple images, variants with their own stock, SKU, tags, sale price).
+  added inline — this keeps the "add a product" flow to a handful of taps.
+- **Order numbers**: generated client-side from a timestamp + random suffix rather than a
+  strict server-arbitrated sequence, since a shared counter document writable by anonymous
+  customers would itself be a race/abuse surface. See ARCHITECTURE.md section 2.
+- **Image deletion**: removing a photo from a product removes it from that product's data,
+  but the underlying Cloudinary asset isn't deleted (that requires a signed request this
+  card-free build has no server to make). See ARCHITECTURE.md section 3.4.

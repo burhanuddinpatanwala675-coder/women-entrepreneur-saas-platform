@@ -1,10 +1,17 @@
 import { useState } from 'react'
-import { api, ApiError } from '@/api/client'
-import type { GiftCard } from '@/api/types'
+import { createGiftCard } from '@/firebase/giftcards'
+import { getFirebaseErrorMessage } from '@/firebase/errors'
 import { Banner, Button, Card, Input, Label, Textarea } from '@/components/ui'
 import { useStorefront } from './StorefrontContext'
 
 const PRESETS = [500, 1000, 2000, 5000]
+
+interface CreatedGiftCard {
+  code: string
+  initialBalance: number
+  recipientName: string
+  message: string | null
+}
 
 export default function GiftCardStorePage() {
   const { business, slug } = useStorefront()
@@ -17,27 +24,26 @@ export default function GiftCardStorePage() {
   const [deliveryDate, setDeliveryDate] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
-  const [result, setResult] = useState<GiftCard | null>(null)
+  const [result, setResult] = useState<CreatedGiftCard | null>(null)
 
   async function submit() {
     setError(null)
     setSaving(true)
     try {
-      const g = await api.post<GiftCard>(
-        `/public/stores/${slug}/gift-cards/purchase`,
-        {
-          initial_balance: Number(customAmount || amount),
-          sender_name: senderName || null,
-          recipient_name: recipientName,
-          recipient_contact: recipientContact,
-          message: message || null,
-          delivery_date: deliveryDate ? new Date(deliveryDate).toISOString() : null,
-        },
-        { auth: false },
-      )
-      setResult(g)
+      const initialBalance = Number(customAmount || amount)
+      const code = await createGiftCard({
+        businessId: slug,
+        initialBalance,
+        senderName: senderName || null,
+        recipientName,
+        recipientContact,
+        message: message || null,
+        deliveryDate: deliveryDate ? new Date(deliveryDate) : null,
+        expiresAt: null,
+      })
+      setResult({ code, initialBalance, recipientName, message: message || null })
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not create this gift card')
+      setError(getFirebaseErrorMessage(err))
     } finally {
       setSaving(false)
     }
@@ -52,14 +58,14 @@ export default function GiftCardStorePage() {
           <div className="bg-gradient-to-br from-brand-500 to-brand-700 p-5 text-white">
             <p className="text-xs uppercase tracking-wide opacity-80">{business.name} Gift Card</p>
             <p className="mt-2 font-mono text-2xl font-bold">{result.code}</p>
-            <p className="mt-1 text-3xl font-bold">Rs. {result.initial_balance.toLocaleString()}</p>
+            <p className="mt-1 text-3xl font-bold">Rs. {result.initialBalance.toLocaleString()}</p>
           </div>
           <div className="p-4 text-left">
-            <p className="text-sm text-ink-700">To: {result.recipient_name}</p>
+            <p className="text-sm text-ink-700">To: {result.recipientName}</p>
             {result.message && <p className="mt-1 text-sm italic text-ink-500">"{result.message}"</p>}
           </div>
         </Card>
-        <p className="mt-4 text-sm text-ink-500">Share this code with {result.recipient_name} — they can use it at checkout.</p>
+        <p className="mt-4 text-sm text-ink-500">Share this code with {result.recipientName} — they can use it at checkout.</p>
       </div>
     )
   }

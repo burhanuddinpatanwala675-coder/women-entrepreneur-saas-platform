@@ -1,53 +1,77 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api } from '@/api/client'
-import type { Business, Customer, Order, Product } from '@/api/types'
+import { collection, doc, onSnapshot, query, where } from 'firebase/firestore'
+import { db } from '@/firebase/client'
+import type { BusinessDoc, CustomerDoc, OrderDoc, ProductDoc } from '@/firebase/types'
 import { useAuth } from '@/auth/AuthContext'
 import { PageHeader } from '@/components/SellerLayout'
 import { Badge, Button, Card, StatCard } from '@/components/ui'
 
-function isToday(iso: string) {
-  const d = new Date(iso)
+type Order = OrderDoc & { id: string }
+type Customer = CustomerDoc & { id: string }
+type Product = ProductDoc & { id: string }
+
+function isToday(ts: { toDate: () => Date } | null | undefined) {
+  if (!ts) return false
+  const d = ts.toDate()
   const now = new Date()
   return d.toDateString() === now.toDateString()
 }
 
 export default function DashboardHome() {
   const { user } = useAuth()
-  const [business, setBusiness] = useState<Business | null>(null)
+  const businessId = user!.businessId!
+  const [business, setBusiness] = useState<BusinessDoc | null>(null)
   const [orders, setOrders] = useState<Order[]>([])
   const [customers, setCustomers] = useState<Customer[]>([])
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    Promise.all([
-      api.get<Business>('/businesses/me'),
-      api.get<Order[]>('/orders'),
-      api.get<Customer[]>('/customers'),
-      api.get<Product[]>('/products'),
-    ])
-      .then(([b, o, c, p]) => {
-        setBusiness(b)
-        setOrders(o)
-        setCustomers(c)
-        setProducts(p)
-      })
-      .finally(() => setLoading(false))
-  }, [])
+    let loaded = { business: false, orders: false, customers: false, products: false }
+    function maybeDone() {
+      if (Object.values(loaded).every(Boolean)) setLoading(false)
+    }
 
-  const todayOrders = useMemo(() => orders.filter((o) => isToday(o.created_at)), [orders])
+    const unsubs = [
+      onSnapshot(doc(db, 'businesses', businessId), (snap) => {
+        setBusiness(snap.exists() ? (snap.data() as BusinessDoc) : null)
+        loaded.business = true
+        maybeDone()
+      }),
+      onSnapshot(query(collection(db, 'orders'), where('businessId', '==', businessId)), (snap) => {
+        const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as OrderDoc) }))
+        items.sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0))
+        setOrders(items)
+        loaded.orders = true
+        maybeDone()
+      }),
+      onSnapshot(query(collection(db, 'customers'), where('businessId', '==', businessId)), (snap) => {
+        setCustomers(snap.docs.map((d) => ({ id: d.id, ...(d.data() as CustomerDoc) })))
+        loaded.customers = true
+        maybeDone()
+      }),
+      onSnapshot(query(collection(db, 'products'), where('businessId', '==', businessId)), (snap) => {
+        setProducts(snap.docs.map((d) => ({ id: d.id, ...(d.data() as ProductDoc) })))
+        loaded.products = true
+        maybeDone()
+      }),
+    ]
+    return () => unsubs.forEach((u) => u())
+  }, [businessId])
+
+  const todayOrders = useMemo(() => orders.filter((o) => isToday(o.createdAt)), [orders])
   const todaySales = useMemo(
     () => todayOrders.filter((o) => o.status !== 'cancelled').reduce((sum, o) => sum + o.total, 0),
     [todayOrders],
   )
-  const newCustomersToday = useMemo(() => customers.filter((c) => isToday(c.created_at)).length, [customers])
+  const newCustomersToday = useMemo(() => customers.filter((c) => isToday(c.createdAt)).length, [customers])
   const pendingOrders = useMemo(() => orders.filter((o) => o.status === 'new' || o.status === 'confirmed').length, [orders])
 
   const checklist = [
     { done: products.length > 0, label: 'Add your first product', to: '/dashboard/products' },
-    { done: !!business?.whatsapp_number, label: 'Set your WhatsApp number', to: '/dashboard/store' },
-    { done: !!business?.logo_url || !!business?.cover_image_url, label: 'Customize your store look', to: '/dashboard/store' },
+    { done: !!business?.whatsappNumber, label: 'Set your WhatsApp number', to: '/dashboard/store' },
+    { done: !!business?.logoUrl || !!business?.coverImageUrl, label: 'Customize your store look', to: '/dashboard/store' },
     { done: orders.length > 0, label: 'Share your store link and get your first order', to: '/dashboard/store' },
   ]
   const nextStep = checklist.find((c) => !c.done)
@@ -58,7 +82,7 @@ export default function DashboardHome() {
 
   return (
     <div>
-      <PageHeader title={`Welcome back, ${user?.full_name.split(' ')[0]} 👋`} subtitle={business?.name} />
+      <PageHeader title={`Welcome back, ${user?.fullName.split(' ')[0]} 👋`} subtitle={business?.name} />
 
       {nextStep && (
         <Card className="mb-6 flex flex-wrap items-center justify-between gap-3 border-brand-200 bg-brand-50 p-4">
@@ -109,8 +133,8 @@ export default function DashboardHome() {
             {orders.slice(0, 5).map((o) => (
               <Link key={o.id} to={`/dashboard/orders/${o.id}`} className="flex items-center justify-between px-4 py-3">
                 <div>
-                  <p className="font-medium text-ink-900">{o.order_number}</p>
-                  <p className="text-xs text-ink-500">{o.customer_name}</p>
+                  <p className="font-medium text-ink-900">{o.orderNumber}</p>
+                  <p className="text-xs text-ink-500">{o.createdAt?.toDate().toLocaleDateString() ?? '—'}</p>
                 </div>
                 <div className="text-right">
                   <p className="font-semibold text-ink-900">Rs. {o.total.toLocaleString()}</p>
@@ -125,7 +149,7 @@ export default function DashboardHome() {
   )
 }
 
-function statusTone(status: Order['status']) {
+function statusTone(status: OrderDoc['status']) {
   switch (status) {
     case 'new':
       return 'amber' as const

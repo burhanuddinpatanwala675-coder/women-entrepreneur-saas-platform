@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/auth/AuthContext'
 import { Banner, Button, Input, Label } from '@/components/ui'
-import { ApiError } from '@/api/client'
+import { getFirebaseErrorMessage } from '@/firebase/errors'
 
 export default function Signup() {
   const { signup } = useAuth()
@@ -17,16 +17,12 @@ export default function Signup() {
   async function onSubmit(e: FormEvent) {
     e.preventDefault()
     setError(null)
-    if (!email && !phone) {
-      setError('Please add your email or phone number')
-      return
-    }
     setLoading(true)
     try {
-      await signup({ full_name: fullName, email: email || undefined, phone: phone || undefined, password })
+      await signup({ full_name: fullName, email, phone: phone || undefined, password })
       navigate('/onboarding', { replace: true })
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Something went wrong. Please try again.')
+      setError(getFirebaseErrorMessage(err))
     } finally {
       setLoading(false)
     }
@@ -50,10 +46,10 @@ export default function Signup() {
           </div>
           <div>
             <Label htmlFor="email">Email</Label>
-            <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
+            <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" required />
           </div>
           <div>
-            <Label htmlFor="phone">Phone (optional if email added)</Label>
+            <Label htmlFor="phone">Phone (optional)</Label>
             <Input id="phone" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="03xxxxxxxxx" />
           </div>
           <div>

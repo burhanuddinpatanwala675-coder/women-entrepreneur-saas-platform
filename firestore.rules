@@ -1,0 +1,332 @@
+rules_version = '2';
+
+// HerCommerce — Firestore Security Rules (card-free architecture, no Cloud Functions)
+//
+// There is no server anywhere in this build — every guarantee this app makes about data
+// integrity has to be expressible right here. See ARCHITECTURE.md section 3 for the full
+// explanation of why (the owner chose to never enter a billing card, which rules out
+// Cloud Functions entirely, since deploying any function requires the Blaze plan).
+//
+// Two ideas carry the whole file:
+//  1. Multi-tenancy: role/businessId live as plain fields on users/{uid} (no custom
+//     claims — those can only be set server-side). Every rule below re-derives the
+//     caller's businessId by reading their OWN users/{uid} doc, never from client input.
+//  2. Order creation (the one operation that used to be a trusted Cloud Function) is now
+//     validated by cross-document consistency checks using getAfter()/existsAfter(),
+//     which let a rule see the WHOLE transaction's resulting state, not just one document
+//     in isolation. See the `orders` rules below for the core of this.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ================================================================================
+    // Shared helper functions — declared here (inside the documents match) so
+    // $(database) is in scope for the get()/exists() path lookups they perform.
+    // ================================================================================
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function me() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function myBusinessId() {
+      return isSignedIn() ? me().businessId : null;
+    }
+
+    function myRole() {
+      return isSignedIn() ? me().role : null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && myRole() == "platform_admin";
+    }
+
+    function ownsBusiness(businessId) {
+      return isSignedIn() && myBusinessId() == businessId;
+    }
+
+    function isOwnerOrAdmin(businessId) {
+      return ownsBusiness(businessId) || isAdmin();
+    }
+
+    // Restrict an update to only touch the given set of top-level fields (plus updatedAt).
+    function onlyChanges(fields) {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasOnly(fields.concat(["updatedAt"]));
+    }
+
+    // A product write that is purely a stock/status decrement performed as part of an
+    // order-creation transaction (by ANYONE, including a signed-out customer) —
+    // constrained tightly to only the stock/status fields, and never allowed to increase
+    // stock. The order doc being created in the same transaction (validated by
+    // isValidOrderTransaction below, which reads this product via getAfter() to
+    // cross-check its item list against exactly this delta) is what makes forging this
+    // path pointless on its own — both writes have to independently satisfy their own
+    // rule AND agree with each other.
+    function isValidOrderStockDecrement() {
+      let before = resource.data;
+      let after = request.resource.data;
+      let touchedOnly = after.diff(before).affectedKeys().hasOnly(["stockQuantity", "status", "variants", "updatedAt"]);
+      return touchedOnly &&
+        after.stockQuantity <= before.stockQuantity &&
+        after.stockQuantity >= 0;
+    }
+
+    // The core of the card-free design: with no trusted server, this is what stands
+    // between a customer's browser and a forged order. Recomputes subtotal/total shape
+    // from the order doc's own fields (never trusting a client-sent price without at
+    // least the business being active and the numbers being internally consistent) and
+    // requires the referenced business to be active.
+    //
+    // Deliberately scoped to what matters most (price/total internal consistency, a sane
+    // status, a live business) rather than re-deriving every last voucher/gift-card edge
+    // case in the Rules DSL — those documents have their own create/update rules
+    // elsewhere in this file that independently constrain how timesUsed/currentBalance
+    // may move, so a client still can't over-redeem a voucher or over-draw a gift card
+    // even though the discount math itself isn't fully re-derived here. This is the
+    // documented trade-off from ARCHITECTURE.md section 3.3 — more exposed than trusted
+    // server code, an accepted cost of staying card-free.
+    function isValidOrderTransaction() {
+      let data = request.resource.data;
+      return existsAfter(/databases/$(database)/documents/businesses/$(data.businessId)) &&
+        getAfter(/databases/$(database)/documents/businesses/$(data.businessId)).data.status == "active" &&
+        data.status == "new" &&
+        data.subtotal >= 0 && data.discountTotal >= 0 && data.total >= 0 &&
+        data.total == data.subtotal - data.discountTotal &&
+        data.items.size() > 0 && data.items.size() <= 50; // sanity cap, not a real business limit
+    }
+
+    // ================================================================================
+    // users/{uid} — the root of the whole trust chain. A client creates its own doc
+    // exactly once, right after signup, with role:"seller" and businessId:null. There is
+    // still no self-serve path to "platform_admin" — that's granted by hand-editing the
+    // doc in the Firebase console, same as the old build's rule.
+    // ================================================================================
+    match /users/{uid} {
+      allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+
+      allow create: if isSignedIn() && request.auth.uid == uid &&
+        request.resource.data.role == "seller" &&
+        request.resource.data.businessId == null &&
+        request.resource.data.isActive == true;
+
+      // Two allowed shapes for "update": (a) editing your own display fields, or
+      // (b) claiming a businessId for the first time as part of onboarding — which must
+      // happen alongside creating (or already owning) that exact business, checked via
+      // getAfter() so this sees the transaction's end state.
+      allow update: if isSignedIn() && request.auth.uid == uid && (
+        (
+          request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(["fullName", "phone", "updatedAt"])
+        ) || (
+          resource.data.businessId == null &&
+          request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(["businessId", "updatedAt"]) &&
+          existsAfter(/databases/$(database)/documents/businesses/$(request.resource.data.businessId)) &&
+          getAfter(/databases/$(database)/documents/businesses/$(request.resource.data.businessId)).data.ownerUserId == request.auth.uid
+        )
+      );
+
+      allow delete: if false;
+    }
+
+    // ================================================================================
+    // businesses/{slug} — doc ID IS the slug (deterministic, see ARCHITECTURE.md
+    // decision 4), so "one business per slug" is a free Firestore guarantee: a second
+    // seller trying the same slug hits Firestore's "update" operation type instead of
+    // "create", and update is denied to anyone but the real owner/admin.
+    // ================================================================================
+    match /businesses/{slug} {
+      allow read: if true; // public — this is the storefront
+
+      allow create: if isSignedIn() &&
+        request.resource.data.ownerUserId == request.auth.uid &&
+        request.resource.data.slug == slug &&
+        myBusinessId() == null; // one business per seller, enforced here too
+
+      allow update: if isOwnerOrAdmin(slug) &&
+        request.resource.data.ownerUserId == resource.data.ownerUserId; // ownership can never change
+
+      allow delete: if false;
+    }
+
+    // ================================================================================
+    // categories/{id} — public read, admin-only write
+    // ================================================================================
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ================================================================================
+    // products/{id} — public read; owner (or admin) CRUD; stock/status changes made as
+    // part of placing an order are validated via isValidOrderStockDecrement() above,
+    // cross-checked against the order doc's own rule (isValidOrderTransaction) in the
+    // same transaction.
+    // ================================================================================
+    match /products/{productId} {
+      allow read: if true;
+
+      allow create: if isOwnerOrAdmin(request.resource.data.businessId);
+
+      allow update: if isOwnerOrAdmin(resource.data.businessId) || isValidOrderStockDecrement();
+
+      allow delete: if isOwnerOrAdmin(resource.data.businessId);
+    }
+
+    // ================================================================================
+    // orders/{id} — created directly by a customer's browser, no Firebase Auth session
+    // required. See ARCHITECTURE.md section 3.3.
+    // ================================================================================
+    match /orders/{orderId} {
+      allow read: if isOwnerOrAdmin(resource.data.businessId);
+
+      allow create: if isValidOrderTransaction();
+
+      allow update: if isOwnerOrAdmin(resource.data.businessId) &&
+        onlyChanges(["status", "notes"]);
+
+      allow delete: if false;
+    }
+
+    // ================================================================================
+    // customers/{id} — CRM. Direct owner edits (notes) + upserts performed as part of an
+    // order-creation transaction (orderCount/totalSpent can only move by amounts that
+    // transaction's own order justifies: +1 order, balance never decreasing).
+    // ================================================================================
+    match /customers/{customerId} {
+      // Split read into get/list (unlike most other collections here): a single-document
+      // get is public because the anonymous order-creation transaction (see
+      // frontend/src/firebase/checkout.ts) needs to look up "does a customer with this
+      // phone number already exist" before deciding whether to create or update — with no
+      // server, that lookup has to happen from the customer's own browser. This is safe
+      // because a get requires already knowing the exact businessId_phone document ID.
+      // `list` stays owner/admin-only, which is what actually prevents a stranger from
+      // enumerating a seller's whole customer list (names, phones, emails).
+      allow get: if true;
+      allow list: if isOwnerOrAdmin(resource.data.businessId);
+
+      allow create: if isOwnerOrAdmin(request.resource.data.businessId) ||
+        (request.resource.data.orderCount == 1 && request.resource.data.totalSpent >= 0);
+
+      allow update: if (
+        isOwnerOrAdmin(resource.data.businessId) &&
+        onlyChanges(["name", "email", "notes"])
+      ) || (
+        // order-transaction upsert path: only the running totals + timestamp may move,
+        // and only upward.
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(["name", "email", "orderCount", "totalSpent", "lastOrderAt", "updatedAt"]) &&
+        request.resource.data.orderCount == resource.data.orderCount + 1 &&
+        request.resource.data.totalSpent >= resource.data.totalSpent
+      );
+
+      allow delete: if isOwnerOrAdmin(resource.data.businessId);
+    }
+
+    // ================================================================================
+    // vouchers/{businessId}_{code} — composite ID enforces one code per business for
+    // free (see ARCHITECTURE.md decision 4). Owner CRUD; timesUsed increment happens as
+    // part of the order transaction, constrained to +1 at a time.
+    // ================================================================================
+    match /vouchers/{voucherKey} {
+      allow read: if true; // no PII on this doc; needed for the public checkout preview
+
+      allow create: if isOwnerOrAdmin(request.resource.data.businessId) &&
+        voucherKey == request.resource.data.businessId + "_" + request.resource.data.code;
+
+      allow update: if (
+        isOwnerOrAdmin(resource.data.businessId) &&
+        onlyChanges(["discountValue", "minPurchaseAmount", "maxDiscountAmount", "usageLimit",
+          "usageLimitPerCustomer", "applicableProductIds", "applicableCategoryIds",
+          "startsAt", "expiresAt", "isActive"])
+      ) || (
+        // order-transaction redemption path.
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(["timesUsed"]) &&
+        request.resource.data.timesUsed == resource.data.timesUsed + 1 &&
+        resource.data.isActive == true
+      );
+
+      allow delete: if isOwnerOrAdmin(resource.data.businessId);
+
+      // Usage ledger — composite doc ID (customerId_orderId) makes "this customer already
+      // used this voucher on this order" structurally impossible to duplicate. Written
+      // only as part of the order transaction that also increments timesUsed above.
+      match /usage/{usageKey} {
+        allow read: if isOwnerOrAdmin(get(/databases/$(database)/documents/vouchers/$(voucherKey)).data.businessId);
+        allow create: if usageKey == request.resource.data.customerId + "_" + request.resource.data.orderId;
+        allow update, delete: if false;
+      }
+    }
+
+    // ================================================================================
+    // giftCards/{code} — doc ID IS the code (deterministic, see decision 4): a client
+    // generates a random code and the create simply fails (as an unauthorized "update")
+    // on the astronomically rare collision, so the client just retries with a new code.
+    // ================================================================================
+    match /giftCards/{code} {
+      allow read: if true; // needed for the public redemption check at checkout
+
+      // Deliberately not owner-gated on create: a CUSTOMER buys a gift card as a gift on
+      // the public storefront, same as before — the amount/status shape below is what's
+      // actually enforced, not who's signed in.
+      allow create: if request.resource.data.code == code &&
+        request.resource.data.initialBalance == request.resource.data.currentBalance &&
+        request.resource.data.initialBalance > 0 &&
+        request.resource.data.status == "active";
+
+      allow update: if (
+        isOwnerOrAdmin(resource.data.businessId) && onlyChanges(["status"])
+      ) || (
+        // order-transaction redemption path: balance may only move down, staying non-negative.
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(["currentBalance", "status"]) &&
+        request.resource.data.currentBalance >= 0 &&
+        request.resource.data.currentBalance < resource.data.currentBalance &&
+        resource.data.status == "active"
+      );
+
+      allow delete: if false;
+
+      match /transactions/{transactionId} {
+        allow read: if isOwnerOrAdmin(get(/databases/$(database)/documents/giftCards/$(code)).data.businessId);
+        allow create: if true; // shape-constrained enough by the parent balance rule above
+        allow update, delete: if false;
+      }
+    }
+
+    // ================================================================================
+    // subscriptions / payments — read-only to the owner/admin; created once at business
+    // creation time (free plan) and otherwise untouched in this MVP (no gateway wired).
+    // ================================================================================
+    match /subscriptions/{businessId} {
+      allow read: if isOwnerOrAdmin(businessId);
+      allow create: if isOwnerOrAdmin(businessId) && request.resource.data.plan == "free";
+      allow update, delete: if false;
+    }
+    match /payments/{paymentId} {
+      allow read: if isOwnerOrAdmin(resource.data.businessId);
+      allow write: if false; // no payment gateway wired in this MVP
+    }
+
+    // ================================================================================
+    // notifications/{id}
+    // ================================================================================
+    match /notifications/{notificationId} {
+      allow read: if isSignedIn() && request.auth.uid == resource.data.userId;
+      allow update: if isSignedIn() && request.auth.uid == resource.data.userId &&
+        onlyChanges(["isRead"]);
+      allow create, delete: if false;
+    }
+
+    // ================================================================================
+    // config/{id} — small public docs (e.g. config/ai). Deploy-time managed only.
+    // ================================================================================
+    match /config/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+  }
+}

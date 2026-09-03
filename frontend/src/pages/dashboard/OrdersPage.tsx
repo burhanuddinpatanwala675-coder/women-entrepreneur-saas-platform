@@ -1,9 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api } from '@/api/client'
-import type { Order, OrderStatus } from '@/api/types'
+import { collection, onSnapshot, query, where } from 'firebase/firestore'
+import { db } from '@/firebase/client'
+import type { OrderDoc, OrderStatus } from '@/firebase/types'
+import { useAuth } from '@/auth/AuthContext'
 import { PageHeader } from '@/components/SellerLayout'
 import { Badge, Card, EmptyState } from '@/components/ui'
+
+type Order = OrderDoc & { id: string }
 
 const TABS: { key: OrderStatus | 'all'; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -27,16 +31,22 @@ const STATUS_TONE: Record<OrderStatus, 'green' | 'amber' | 'red' | 'gray' | 'blu
 }
 
 export default function OrdersPage() {
+  const { user } = useAuth()
+  const businessId = user!.businessId!
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<OrderStatus | 'all'>('all')
 
   useEffect(() => {
-    api
-      .get<Order[]>('/orders')
-      .then(setOrders)
-      .finally(() => setLoading(false))
-  }, [])
+    const q = query(collection(db, 'orders'), where('businessId', '==', businessId))
+    const unsub = onSnapshot(q, (snap) => {
+      const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as OrderDoc) }))
+      items.sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0))
+      setOrders(items)
+      setLoading(false)
+    })
+    return unsub
+  }, [businessId])
 
   const filtered = tab === 'all' ? orders : orders.filter((o) => o.status === tab)
 
@@ -71,10 +81,8 @@ export default function OrdersPage() {
           {filtered.map((o) => (
             <Link key={o.id} to={`/dashboard/orders/${o.id}`} className="flex items-center justify-between px-4 py-3.5">
               <div>
-                <p className="font-semibold text-ink-900">{o.order_number}</p>
-                <p className="text-xs text-ink-500">
-                  {o.customer_name} · {new Date(o.created_at).toLocaleDateString()}
-                </p>
+                <p className="font-semibold text-ink-900">{o.orderNumber}</p>
+                <p className="text-xs text-ink-500">{o.createdAt?.toDate().toLocaleDateString() ?? '—'}</p>
               </div>
               <div className="text-right">
                 <p className="font-semibold text-ink-900">Rs. {o.total.toLocaleString()}</p>

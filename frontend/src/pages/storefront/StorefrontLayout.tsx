@@ -1,23 +1,40 @@
 import { useEffect, useState } from 'react'
 import { Link, Outlet, useParams } from 'react-router-dom'
-import { api } from '@/api/client'
-import type { PublicBusiness } from '@/api/types'
+import { doc, getDoc } from 'firebase/firestore'
+import { db } from '@/firebase/client'
+import type { BusinessDoc, CategoryDoc } from '@/firebase/types'
 import { FullScreenSpinner } from '@/components/ui'
 import { CartDrawer, CartFab } from './CartDrawer'
-import { StorefrontContext } from './StorefrontContext'
+import { StorefrontContext, type StorefrontBusiness } from './StorefrontContext'
 
 export default function StorefrontLayout() {
   const { slug } = useParams<{ slug: string }>()
-  const [business, setBusiness] = useState<PublicBusiness | null>(null)
+  const [business, setBusiness] = useState<StorefrontBusiness | null>(null)
   const [notFound, setNotFound] = useState(false)
   const [cartOpen, setCartOpen] = useState(false)
 
   useEffect(() => {
     if (!slug) return
-    api
-      .get<PublicBusiness>(`/public/stores/${slug}`, { auth: false })
-      .then(setBusiness)
-      .catch(() => setNotFound(true))
+    let cancelled = false
+    getDoc(doc(db, 'businesses', slug))
+      .then(async (snap) => {
+        if (cancelled) return
+        if (!snap.exists() || (snap.data() as BusinessDoc).status !== 'active') {
+          setNotFound(true)
+          return
+        }
+        const data = snap.data() as BusinessDoc
+        let categoryName: string | null = null
+        if (data.categoryId) {
+          const catSnap = await getDoc(doc(db, 'categories', data.categoryId))
+          if (catSnap.exists()) categoryName = (catSnap.data() as CategoryDoc).name
+        }
+        if (!cancelled) setBusiness({ id: snap.id, ...data, categoryName })
+      })
+      .catch(() => !cancelled && setNotFound(true))
+    return () => {
+      cancelled = true
+    }
   }, [slug])
 
   if (notFound) {
@@ -33,21 +50,23 @@ export default function StorefrontLayout() {
 
   return (
     <StorefrontContext.Provider value={{ business, slug }}>
-      <div className="min-h-screen bg-cream-50" style={{ ['--accent' as string]: business.accent_color }}>
-        {business.announcement_banner && (
-          <div className="bg-brand-600 px-4 py-2 text-center text-sm font-medium text-white">{business.announcement_banner}</div>
+      <div className="min-h-screen bg-cream-50" style={{ ['--accent' as string]: business.storeSettings.accentColor }}>
+        {business.storeSettings.announcementBanner && (
+          <div className="bg-brand-600 px-4 py-2 text-center text-sm font-medium text-white">
+            {business.storeSettings.announcementBanner}
+          </div>
         )}
 
-        {business.cover_image_url && (
+        {business.coverImageUrl && (
           <div className="h-32 w-full sm:h-48">
-            <img src={business.cover_image_url} alt="" className="h-full w-full object-cover" />
+            <img src={business.coverImageUrl} alt="" className="h-full w-full object-cover" />
           </div>
         )}
 
         <header className="mx-auto max-w-5xl px-4 pb-4 pt-4">
           <div className="flex items-center gap-3">
-            {business.logo_url ? (
-              <img src={business.logo_url} alt={business.name} className="h-16 w-16 rounded-2xl border-4 border-white object-cover shadow" />
+            {business.logoUrl ? (
+              <img src={business.logoUrl} alt={business.name} className="h-16 w-16 rounded-2xl border-4 border-white object-cover shadow" />
             ) : (
               <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-100 text-2xl">🛍️</div>
             )}
@@ -55,10 +74,10 @@ export default function StorefrontLayout() {
               <Link to={`/store/${slug}`}>
                 <h1 className="text-xl font-bold text-ink-900">{business.name}</h1>
               </Link>
-              {business.category_name && <p className="text-sm text-ink-500">{business.category_name}</p>}
+              {business.categoryName && <p className="text-sm text-ink-500">{business.categoryName}</p>}
             </div>
           </div>
-          {business.short_description && <p className="mt-3 text-sm text-ink-700">{business.short_description}</p>}
+          {business.shortDescription && <p className="mt-3 text-sm text-ink-700">{business.shortDescription}</p>}
         </header>
 
         <main className="mx-auto max-w-5xl px-4 pb-24">

@@ -1,16 +1,23 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { api, ApiError } from '@/api/client'
-import type { Order, ProductVariant, PublicProductDetail } from '@/api/types'
-import { useCart } from '@/cart/CartContext'
+import { collection, doc, getDoc, getDocs, limit, query, where } from 'firebase/firestore'
+import { db } from '@/firebase/client'
+import { placeOrder, CheckoutError } from '@/firebase/checkout'
+import { getFirebaseErrorMessage } from '@/firebase/errors'
+import { buildWhatsappOrderLink } from '@/firebase/whatsapp'
+import type { OrderItem, ProductDoc, ProductVariant } from '@/firebase/types'
+import { useCart, type StoreProduct } from '@/cart/CartContext'
 import { Badge, Banner, Button, Input, Label, Modal } from '@/components/ui'
 import { useStorefront } from './StorefrontContext'
+
+type Product = ProductDoc & { id: string }
 
 export default function ProductDetailPage() {
   const { productId } = useParams<{ productId: string }>()
   const { slug } = useStorefront()
   const { addToCart } = useCart()
-  const [product, setProduct] = useState<PublicProductDetail | null>(null)
+  const [product, setProduct] = useState<Product | null>(null)
+  const [related, setRelated] = useState<Product[]>([])
   const [activeImage, setActiveImage] = useState(0)
   const [variant, setVariant] = useState<ProductVariant | undefined>(undefined)
   const [quantity, setQuantity] = useState(1)
@@ -19,20 +26,35 @@ export default function ProductDetailPage() {
 
   useEffect(() => {
     if (!slug || !productId) return
-    api.get<PublicProductDetail>(`/public/stores/${slug}/products/${productId}`, { auth: false }).then((p) => {
+    getDoc(doc(db, 'products', productId)).then(async (snap) => {
+      if (!snap.exists()) return
+      const p = { id: snap.id, ...(snap.data() as ProductDoc) }
       setProduct(p)
       setVariant(p.variants[0])
+
+      if (p.categoryId) {
+        const relSnap = await getDocs(
+          query(collection(db, 'products'), where('businessId', '==', slug), where('categoryId', '==', p.categoryId), limit(5)),
+        )
+        setRelated(
+          relSnap.docs
+            .map((d) => ({ id: d.id, ...(d.data() as ProductDoc) }))
+            .filter((rp) => rp.id !== p.id && rp.status !== 'hidden')
+            .slice(0, 4),
+        )
+      }
     })
   }, [slug, productId])
 
   if (!product) return <p className="py-10 text-center text-ink-500">Loading…</p>
 
-  const price = variant?.price ?? product.sale_price ?? product.price
-  const outOfStock = variant ? variant.stock_quantity <= 0 : !product.is_orderable
+  const price = variant?.price ?? product.salePrice ?? product.price
+  const isOrderable = product.status !== 'sold' && product.status !== 'out_of_stock' && product.status !== 'hidden'
+  const outOfStock = variant ? variant.stockQuantity <= 0 : !isOrderable
 
   function handleAddToCart() {
     if (!product) return
-    addToCart(product, variant, quantity)
+    addToCart(product as StoreProduct, variant, quantity)
     setAdded(true)
     setTimeout(() => setAdded(false), 1800)
   }
@@ -51,7 +73,7 @@ export default function ProductDetailPage() {
             ) : (
               <div className="flex h-full items-center justify-center text-6xl">📷</div>
             )}
-            {!product.is_orderable && (
+            {!isOrderable && (
               <div className="absolute right-3 top-3">
                 <Badge tone="red">SOLD OUT</Badge>
               </div>
@@ -60,7 +82,11 @@ export default function ProductDetailPage() {
           {product.images.length > 1 && (
             <div className="mt-2 flex gap-2">
               {product.images.map((img, i) => (
-                <button key={img.id} onClick={() => setActiveImage(i)} className={`h-14 w-14 overflow-hidden rounded-lg border-2 ${i === activeImage ? 'border-brand-600' : 'border-transparent'}`}>
+                <button
+                  key={img.cloudinaryPublicId || i}
+                  onClick={() => setActiveImage(i)}
+                  className={`h-14 w-14 overflow-hidden rounded-lg border-2 ${i === activeImage ? 'border-brand-600' : 'border-transparent'}`}
+                >
                   <img src={img.url} className="h-full w-full object-cover" />
                 </button>
               ))}
@@ -72,10 +98,10 @@ export default function ProductDetailPage() {
           <h1 className="text-2xl font-bold text-ink-900">{product.name}</h1>
           <div className="mt-1 flex items-center gap-2">
             <p className="text-xl font-bold text-brand-700">Rs. {price.toLocaleString()}</p>
-            {product.sale_price && <p className="text-sm text-ink-300 line-through">Rs. {product.price.toLocaleString()}</p>}
+            {product.salePrice && <p className="text-sm text-ink-300 line-through">Rs. {product.price.toLocaleString()}</p>}
           </div>
 
-          {!product.is_orderable ? (
+          {!isOrderable ? (
             <Badge tone="red" className="mt-2">
               SOLD OUT
             </Badge>
@@ -95,13 +121,13 @@ export default function ProductDetailPage() {
                   <button
                     key={v.id}
                     onClick={() => setVariant(v)}
-                    disabled={v.stock_quantity <= 0}
+                    disabled={v.stockQuantity <= 0}
                     className={`rounded-xl border-2 px-3 py-2 text-sm font-medium disabled:opacity-40 ${
                       variant?.id === v.id ? 'border-brand-600 bg-brand-50 text-brand-700' : 'border-ink-300 text-ink-700'
                     }`}
                   >
                     {v.name}
-                    {v.stock_quantity <= 0 && ' (Sold out)'}
+                    {v.stockQuantity <= 0 && ' (Sold out)'}
                   </button>
                 ))}
               </div>
@@ -132,18 +158,18 @@ export default function ProductDetailPage() {
         </div>
       </div>
 
-      {product.related_products.length > 0 && (
+      {related.length > 0 && (
         <div className="mt-10">
           <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-500">You may also like</h2>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            {product.related_products.map((rp) => (
+            {related.map((rp) => (
               <Link key={rp.id} to={`/store/${slug}/product/${rp.id}`} className="overflow-hidden rounded-2xl bg-white shadow-sm">
                 <div className="aspect-square w-full bg-cream-100">
                   {rp.images[0] && <img src={rp.images[0].url} className="h-full w-full object-cover" />}
                 </div>
                 <div className="p-2">
                   <p className="truncate text-xs font-medium text-ink-900">{rp.name}</p>
-                  <p className="text-xs text-ink-700">Rs. {(rp.sale_price ?? rp.price).toLocaleString()}</p>
+                  <p className="text-xs text-ink-700">Rs. {(rp.salePrice ?? rp.price).toLocaleString()}</p>
                 </div>
               </Link>
             ))}
@@ -156,7 +182,7 @@ export default function ProductDetailPage() {
           product={product}
           variant={variant}
           quantity={quantity}
-          slug={slug}
+          businessId={slug}
           onClose={() => setQuickBuyOpen(false)}
         />
       )}
@@ -168,54 +194,60 @@ function QuickBuyModal({
   product,
   variant,
   quantity,
-  slug,
+  businessId,
   onClose,
 }: {
-  product: PublicProductDetail
+  product: Product
   variant?: ProductVariant
   quantity: number
-  slug: string
+  businessId: string
   onClose: () => void
 }) {
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
+  const { business } = useStorefront()
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState<{ order: Order; whatsapp_link?: string } | null>(null)
+  const [result, setResult] = useState<{ orderNumber: string; total: number; items: OrderItem[] } | null>(null)
 
   async function submit() {
     setError(null)
     setLoading(true)
     try {
-      const res = await api.post<{ order: Order; whatsapp_link?: string }>(
-        `/public/stores/${slug}/orders`,
-        {
-          customer: { name, phone },
-          items: [{ product_id: product.id, product_variant_id: variant?.id, quantity }],
-          channel: 'whatsapp',
-        },
-        { auth: false },
-      )
-      setResult(res)
+      const res = await placeOrder({
+        businessId,
+        items: [{ productId: product.id, variantId: variant?.id, quantity }],
+        customerName: name,
+        customerPhone: phone,
+        channel: 'whatsapp',
+      })
+      setResult({ orderNumber: res.orderNumber, total: res.total, items: res.items })
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not place your order')
+      setError(err instanceof CheckoutError ? err.message : getFirebaseErrorMessage(err))
     } finally {
       setLoading(false)
     }
   }
+
+  const whatsappLink = result
+    ? buildWhatsappOrderLink(business.whatsappNumber, { orderNumber: result.orderNumber, items: result.items, total: result.total }, name)
+    : null
 
   return (
     <Modal open onClose={onClose} title={result ? 'Order placed! 🎉' : 'Order on WhatsApp'}>
       {result ? (
         <div className="text-center">
           <p className="text-sm text-ink-700">
-            Order <span className="font-semibold">{result.order.order_number}</span> — Rs. {result.order.total.toLocaleString()}
+            Order <span className="font-semibold">{result.orderNumber}</span> — Rs. {result.total.toLocaleString()}
           </p>
-          {result.whatsapp_link && (
-            <a href={result.whatsapp_link} target="_blank" rel="noreferrer" className="mt-4 block">
+          {whatsappLink && (
+            <a href={whatsappLink} target="_blank" rel="noreferrer" className="mt-4 block">
               <Button fullWidth>💬 Confirm on WhatsApp</Button>
             </a>
           )}
+          <Button variant={whatsappLink ? 'outline' : 'primary'} fullWidth className="mt-2" onClick={onClose}>
+            Done
+          </Button>
         </div>
       ) : (
         <div className="space-y-3">
@@ -232,7 +264,7 @@ function QuickBuyModal({
             <Input id="qb-phone" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="03xxxxxxxxx" />
           </div>
           <Button fullWidth loading={loading} disabled={!name.trim() || !phone.trim()} onClick={submit}>
-            Continue to WhatsApp
+            Place order
           </Button>
         </div>
       )}

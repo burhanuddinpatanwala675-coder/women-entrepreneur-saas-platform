@@ -1,25 +1,67 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { api, ApiError } from '@/api/client'
-import type { Business, CategoryTree, Product } from '@/api/types'
+import {
+  collection,
+  doc,
+  getDocs,
+  runTransaction,
+  serverTimestamp,
+  setDoc,
+} from 'firebase/firestore'
+import { db } from '@/firebase/client'
+import { uploadImage } from '@/cloudinary/upload'
+import { slugify, withUniqueSuffix } from '@/firebase/slugify'
+import { getFirebaseErrorMessage } from '@/firebase/errors'
+import type { CategoryDoc, ProductImage } from '@/firebase/types'
 import { useAuth } from '@/auth/AuthContext'
 import { Banner, Button, Input, Label, Spinner, Textarea } from '@/components/ui'
 
 const STEPS = ['Category', 'Business', 'Product', 'Done']
 
+type CategoryWithId = CategoryDoc & { id: string }
+type CategoryTree = CategoryWithId & { children: CategoryWithId[] }
+
+interface WizardBusiness {
+  id: string // == slug, == the Firestore doc ID
+  name: string
+  storefrontPath: string
+}
+
+interface WizardProduct {
+  id: string
+  name: string
+}
+
 export default function OnboardingWizard() {
+  const { user } = useAuth()
   const [step, setStep] = useState(0)
   const [categories, setCategories] = useState<CategoryTree[]>([])
   const [loadingCategories, setLoadingCategories] = useState(true)
   const [categoryId, setCategoryId] = useState<string | null>(null)
-  const [business, setBusiness] = useState<Business | null>(null)
-  const [product, setProduct] = useState<Product | null>(null)
+  const [business, setBusiness] = useState<WizardBusiness | null>(null)
+  const [product, setProduct] = useState<WizardProduct | null>(null)
 
   useEffect(() => {
-    api
-      .get<CategoryTree[]>('/categories')
-      .then(setCategories)
-      .finally(() => setLoadingCategories(false))
+    getDocs(collection(db, 'categories')).then((snap) => {
+      const all = snap.docs.map((d) => ({ id: d.id, ...(d.data() as CategoryDoc) }))
+      const byId = new Map(all.map((c) => [c.id, c]))
+      const roots: CategoryTree[] = []
+      for (const cat of all) {
+        if (!cat.isActive) continue
+        if (!cat.parentId) {
+          roots.push({ ...cat, children: [] })
+        }
+      }
+      for (const cat of all) {
+        if (cat.parentId && byId.has(cat.parentId)) {
+          const root = roots.find((r) => r.id === cat.parentId)
+          root?.children.push(cat)
+        }
+      }
+      roots.sort((a, b) => a.sortOrder - b.sortOrder)
+      setCategories(roots)
+      setLoadingCategories(false)
+    })
   }, [])
 
   return (
@@ -49,14 +91,25 @@ export default function OnboardingWizard() {
             onNext={() => setStep(1)}
           />
         )}
-        {step === 1 && categoryId && (
-          <BusinessStep categoryId={categoryId} onBack={() => setStep(0)} onNext={(b) => { setBusiness(b); setStep(2) }} />
+        {step === 1 && categoryId && user && (
+          <BusinessStep
+            uid={user.uid}
+            categoryId={categoryId}
+            onBack={() => setStep(0)}
+            onNext={(b) => {
+              setBusiness(b)
+              setStep(2)
+            }}
+          />
         )}
         {step === 2 && business && (
           <FirstProductStep
             business={business}
             onBack={() => setStep(1)}
-            onNext={(p) => { setProduct(p); setStep(3) }}
+            onNext={(p) => {
+              setProduct(p)
+              setStep(3)
+            }}
             onSkip={() => setStep(3)}
           />
         )}
@@ -114,7 +167,85 @@ function CategoryStep({
 }
 
 /* ---------------- Screen 2: Business info ---------------- */
-function BusinessStep({ categoryId, onBack, onNext }: { categoryId: string; onBack: () => void; onNext: (b: Business) => void }) {
+const DEFAULT_STORE_SETTINGS = {
+  accentColor: '#B45361',
+  showSearch: true,
+  showFilters: true,
+  codEnabled: true,
+  manualPaymentInstructions: null as string | null,
+  announcementBanner: null as string | null,
+}
+
+/**
+ * There's no server here to check slug uniqueness (see ARCHITECTURE.md section 3) — the
+ * business document's own ID IS the slug, so Firestore's create-vs-update distinction
+ * enforces uniqueness for free. If the slug is taken, Security Rules deny this as an
+ * unauthorized "update" and we just retry with a suffixed slug.
+ */
+async function createBusinessWithUniqueSlug(
+  uid: string,
+  input: { name: string; shortDescription: string; categoryId: string },
+): Promise<string> {
+  let slug = slugify(input.name)
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await runTransaction(db, async (tx) => {
+        const businessRef = doc(db, 'businesses', slug)
+        const existing = await tx.get(businessRef)
+        if (existing.exists()) {
+          throw new Error('SLUG_TAKEN')
+        }
+        const now = serverTimestamp()
+        tx.set(businessRef, {
+          ownerUserId: uid,
+          name: input.name,
+          slug,
+          shortDescription: input.shortDescription || null,
+          categoryId: input.categoryId,
+          logoUrl: null,
+          coverImageUrl: null,
+          whatsappNumber: null,
+          contactEmail: null,
+          contactPhone: null,
+          socialLinks: {},
+          template: 'minimal',
+          status: 'active',
+          onboardingStep: 2,
+          storeSettings: DEFAULT_STORE_SETTINGS,
+          createdAt: now,
+          updatedAt: now,
+        })
+        tx.set(doc(db, 'subscriptions', slug), {
+          plan: 'free',
+          status: 'active',
+          currentPeriodEnd: null,
+          createdAt: now,
+        })
+        tx.update(doc(db, 'users', uid), { businessId: slug, updatedAt: now })
+      })
+      return slug
+    } catch (err) {
+      if (err instanceof Error && err.message === 'SLUG_TAKEN') {
+        slug = withUniqueSuffix(slugify(input.name))
+        continue
+      }
+      throw err
+    }
+  }
+  throw new Error('Could not create your business — please try a slightly different name.')
+}
+
+function BusinessStep({
+  uid,
+  categoryId,
+  onBack,
+  onNext,
+}: {
+  uid: string
+  categoryId: string
+  onBack: () => void
+  onNext: (b: WizardBusiness) => void
+}) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -124,10 +255,10 @@ function BusinessStep({ categoryId, onBack, onNext }: { categoryId: string; onBa
     setError(null)
     setLoading(true)
     try {
-      const business = await api.post<Business>('/businesses', { name, short_description: description, category_id: categoryId })
-      onNext(business)
+      const slug = await createBusinessWithUniqueSlug(uid, { name, shortDescription: description, categoryId })
+      onNext({ id: slug, name, storefrontPath: `/store/${slug}` })
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not create your business. Please try again.')
+      setError(getFirebaseErrorMessage(err))
     } finally {
       setLoading(false)
     }
@@ -169,15 +300,49 @@ function BusinessStep({ categoryId, onBack, onNext }: { categoryId: string; onBa
 }
 
 /* ---------------- Screen 3: First product ---------------- */
+async function addFirstProduct(
+  businessId: string,
+  input: { name: string; description: string; price: number; stock: number; imageFile: File | null },
+): Promise<string> {
+  const productRef = doc(collection(db, 'products'))
+  let images: ProductImage[] = []
+
+  if (input.imageFile) {
+    const uploaded = await uploadImage(input.imageFile, `products/${businessId}/${productRef.id}`)
+    images = [{ url: uploaded.url, cloudinaryPublicId: uploaded.publicId, sortOrder: 0, isPrimary: true }]
+  }
+
+  const now = serverTimestamp()
+  await setDoc(productRef, {
+    businessId,
+    categoryId: null,
+    name: input.name,
+    slug: slugify(input.name),
+    description: input.description || null,
+    price: input.price,
+    salePrice: null,
+    sku: null,
+    stockQuantity: input.stock,
+    status: input.stock > 0 ? 'available' : 'out_of_stock',
+    lowStockThreshold: 3,
+    tags: [],
+    images,
+    variants: [],
+    createdAt: now,
+    updatedAt: now,
+  })
+  return productRef.id
+}
+
 function FirstProductStep({
   business,
   onBack,
   onNext,
   onSkip,
 }: {
-  business: Business
+  business: WizardBusiness
   onBack: () => void
-  onNext: (p: Product) => void
+  onNext: (p: WizardProduct) => void
   onSkip: () => void
 }) {
   const [name, setName] = useState('')
@@ -200,21 +365,16 @@ function FirstProductStep({
     setError(null)
     setLoading(true)
     try {
-      let images: { url: string; is_primary: boolean }[] = []
-      if (imageFile) {
-        const uploaded = await api.upload<{ url: string }>('/uploads/image', imageFile)
-        images = [{ url: uploaded.url, is_primary: true }]
-      }
-      const product = await api.post<Product>('/products', {
+      const productId = await addFirstProduct(business.id, {
         name,
         description,
         price: Number(price),
-        stock_quantity: Number(stock) || 0,
-        images,
+        stock: Number(stock) || 0,
+        imageFile,
       })
-      onNext(product)
+      onNext({ id: productId, name })
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not add your product. Please try again.')
+      setError(getFirebaseErrorMessage(err))
     } finally {
       setLoading(false)
     }
@@ -277,21 +437,16 @@ function FirstProductStep({
 }
 
 /* ---------------- Screen 4: Done ---------------- */
-function DoneStep({ business, hasProduct }: { business: Business; hasProduct: boolean }) {
+function DoneStep({ business, hasProduct }: { business: WizardBusiness; hasProduct: boolean }) {
   const navigate = useNavigate()
-  const { refreshUser } = useAuth()
-  const [finishing, setFinishing] = useState(false)
-  const storeUrl = `${window.location.origin}${business.storefront_path}`
+  const storeUrl = `${window.location.origin}${business.storefrontPath}`
 
-  async function goToDashboard() {
-    setFinishing(true)
-    try {
-      await api.post('/businesses/me/complete-onboarding')
-      await refreshUser()
-      navigate('/dashboard', { replace: true })
-    } finally {
-      setFinishing(false)
-    }
+  function goToDashboard() {
+    // Nothing left to do here — AuthContext already reflects businessId live (it's a
+    // Firestore onSnapshot listener on users/{uid}, updated the moment BusinessStep's
+    // transaction committed), so RequireBusiness will let this navigation straight
+    // through with no extra round-trip.
+    navigate('/dashboard', { replace: true })
   }
 
   function copyLink() {
@@ -324,7 +479,7 @@ function DoneStep({ business, hasProduct }: { business: Business; hasProduct: bo
         </div>
       </div>
 
-      <Button fullWidth size="lg" className="mt-8" loading={finishing} onClick={goToDashboard}>
+      <Button fullWidth size="lg" className="mt-8" onClick={goToDashboard}>
         Go to my dashboard
       </Button>
     </div>

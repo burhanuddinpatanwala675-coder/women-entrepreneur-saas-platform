@@ -1,0 +1,17 @@
+{
+  "name": "hercommerce-scripts",
+  "private": true,
+  "description": "One-off local admin scripts (category seeding, etc). Runs via the Admin SDK directly on your own machine — NOT a Cloud Function, needs no Blaze plan, costs nothing.",
+  "type": "commonjs",
+  "scripts": {
+    "seed": "ts-node seed.ts"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.7.0"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.3",
+    "@types/node": "^20.14.0"
+  }
+}

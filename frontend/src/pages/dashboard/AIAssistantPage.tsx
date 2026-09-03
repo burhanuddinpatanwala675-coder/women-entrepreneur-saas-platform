@@ -1,40 +1,25 @@
 import { useEffect, useState } from 'react'
-import { api, ApiError } from '@/api/client'
-import type { AIStatus } from '@/api/types'
+import { doc, onSnapshot } from 'firebase/firestore'
+import { db } from '@/firebase/client'
 import { PageHeader } from '@/components/SellerLayout'
 import { Banner, Button, Card, Input, Label } from '@/components/ui'
 
-interface ProductContent {
-  title: string
-  description: string
-  tags: string[]
-  social_caption: string
+interface AIConfigDoc {
+  configured: boolean
+  provider: string
 }
 
 export default function AIAssistantPage() {
-  const [status, setStatus] = useState<AIStatus | null>(null)
+  const [status, setStatus] = useState<AIConfigDoc | null>(null)
   const [productName, setProductName] = useState('')
   const [keywords, setKeywords] = useState('')
-  const [result, setResult] = useState<ProductContent | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
 
   useEffect(() => {
-    api.get<AIStatus>('/ai/status').then(setStatus)
+    const unsub = onSnapshot(doc(db, 'config', 'ai'), (snap) => {
+      setStatus(snap.exists() ? (snap.data() as AIConfigDoc) : { configured: false, provider: 'none' })
+    })
+    return unsub
   }, [])
-
-  async function generate() {
-    setError(null)
-    setLoading(true)
-    try {
-      const content = await api.post<ProductContent>('/ai/generate-product-content', { product_name: productName, keywords })
-      setResult(content)
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Something went wrong')
-    } finally {
-      setLoading(false)
-    }
-  }
 
   return (
     <div className="mx-auto max-w-2xl">
@@ -45,8 +30,14 @@ export default function AIAssistantPage() {
           <div className="flex items-start gap-3">
             <span className="text-2xl">✨</span>
             <div>
-              <h2 className="font-semibold text-brand-700">AI Assistant needs to be connected</h2>
-              <p className="mt-1 text-sm text-ink-700">{status.message}</p>
+              <h2 className="font-semibold text-brand-700">AI Assistant isn't connected yet</h2>
+              <p className="mt-1 text-sm text-ink-700">
+                This feature needs a small piece of paid infrastructure (Firebase Cloud Functions) that this build
+                deliberately doesn't use, to keep the whole platform completely free to run. The rest of the app
+                doesn't need it — everything else works fully without a bill. This can be revisited later; see{' '}
+                <code className="rounded bg-white px-1 py-0.5 text-xs">functions/README.md</code> for exactly what
+                turning it on would involve.
+              </p>
             </div>
           </div>
         </Card>
@@ -61,31 +52,30 @@ export default function AIAssistantPage() {
         <div className="mt-4 space-y-3">
           <div>
             <Label htmlFor="ai-name">Product name or idea</Label>
-            <Input id="ai-name" value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="e.g. Black embroidered lawn suit" />
+            <Input
+              id="ai-name"
+              value={productName}
+              onChange={(e) => setProductName(e.target.value)}
+              placeholder="e.g. Black embroidered lawn suit"
+              disabled
+            />
           </div>
           <div>
             <Label htmlFor="ai-keywords">Keywords (optional)</Label>
-            <Input id="ai-keywords" value={keywords} onChange={(e) => setKeywords(e.target.value)} placeholder="festive, cotton, handmade" />
+            <Input
+              id="ai-keywords"
+              value={keywords}
+              onChange={(e) => setKeywords(e.target.value)}
+              placeholder="festive, cotton, handmade"
+              disabled
+            />
           </div>
-          {error && <Banner tone="danger">{error}</Banner>}
-          <Button fullWidth loading={loading} disabled={!productName.trim() || !status?.configured} onClick={generate}>
-            {status?.configured ? 'Generate content' : 'AI not connected yet'}
+          {status?.configured === false && <Banner tone="brand">Not connected yet — see the note above.</Banner>}
+          <Button fullWidth disabled>
+            AI not connected yet
           </Button>
         </div>
       </Card>
-
-      {result && (
-        <Card className="mt-4 p-5">
-          <h3 className="text-sm font-semibold uppercase tracking-wide text-ink-500">Title</h3>
-          <p className="mt-1 font-medium text-ink-900">{result.title}</p>
-          <h3 className="mt-4 text-sm font-semibold uppercase tracking-wide text-ink-500">Description</h3>
-          <p className="mt-1 text-sm text-ink-700">{result.description}</p>
-          <h3 className="mt-4 text-sm font-semibold uppercase tracking-wide text-ink-500">Tags</h3>
-          <p className="mt-1 text-sm text-ink-700">{result.tags.join(', ')}</p>
-          <h3 className="mt-4 text-sm font-semibold uppercase tracking-wide text-ink-500">Social caption</h3>
-          <p className="mt-1 text-sm text-ink-700">{result.social_caption}</p>
-        </Card>
-      )}
 
       <div className="mt-6 grid grid-cols-1 gap-3 opacity-60 sm:grid-cols-2">
         {['Marketing captions', 'Instagram post ideas', 'WhatsApp marketing messages', 'Pricing suggestions'].map((f) => (

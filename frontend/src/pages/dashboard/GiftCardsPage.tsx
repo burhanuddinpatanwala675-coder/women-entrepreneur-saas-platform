@@ -1,24 +1,34 @@
 import { useEffect, useState } from 'react'
-import { api, ApiError } from '@/api/client'
-import type { GiftCard } from '@/api/types'
+import { collection, onSnapshot, query, where } from 'firebase/firestore'
+import { db } from '@/firebase/client'
+import { createGiftCard } from '@/firebase/giftcards'
+import { getFirebaseErrorMessage } from '@/firebase/errors'
+import type { GiftCardDoc } from '@/firebase/types'
+import { useAuth } from '@/auth/AuthContext'
 import { PageHeader } from '@/components/SellerLayout'
 import { Badge, Banner, Button, Card, EmptyState, Input, Label, Modal, Textarea } from '@/components/ui'
+
+type GiftCard = GiftCardDoc & { id: string }
 
 const PRESETS = [500, 1000, 2000, 5000]
 
 export default function GiftCardsPage() {
+  const { user } = useAuth()
+  const businessId = user!.businessId!
   const [cards, setCards] = useState<GiftCard[]>([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
 
-  function load() {
-    setLoading(true)
-    api
-      .get<GiftCard[]>('/gift-cards')
-      .then(setCards)
-      .finally(() => setLoading(false))
-  }
-  useEffect(load, [])
+  useEffect(() => {
+    const q = query(collection(db, 'giftCards'), where('businessId', '==', businessId))
+    const unsub = onSnapshot(q, (snap) => {
+      const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as GiftCardDoc) }))
+      items.sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0))
+      setCards(items)
+      setLoading(false)
+    })
+    return unsub
+  }, [businessId])
 
   return (
     <div>
@@ -40,11 +50,11 @@ export default function GiftCardsPage() {
               <div className="bg-gradient-to-br from-brand-500 to-brand-700 p-4 text-white">
                 <p className="text-xs uppercase tracking-wide opacity-80">Gift Card</p>
                 <p className="mt-1 font-mono text-xl font-bold">{g.code}</p>
-                <p className="mt-1 text-2xl font-bold">Rs. {g.current_balance.toLocaleString()}</p>
+                <p className="mt-1 text-2xl font-bold">Rs. {g.currentBalance.toLocaleString()}</p>
               </div>
               <div className="p-4">
-                <p className="text-sm text-ink-700">To: {g.recipient_name}</p>
-                <p className="text-sm text-ink-500">{g.recipient_contact}</p>
+                <p className="text-sm text-ink-700">To: {g.recipientName}</p>
+                <p className="text-sm text-ink-500">{g.recipientContact}</p>
                 {g.message && <p className="mt-1 text-sm italic text-ink-500">"{g.message}"</p>}
                 <Badge tone={g.status === 'active' ? 'green' : 'gray'} className="mt-2">
                   {g.status}
@@ -55,20 +65,12 @@ export default function GiftCardsPage() {
         </div>
       )}
 
-      {creating && (
-        <GiftCardForm
-          onClose={() => setCreating(false)}
-          onCreated={(g) => {
-            setCards((prev) => [g, ...prev])
-            setCreating(false)
-          }}
-        />
-      )}
+      {creating && <GiftCardForm businessId={businessId} onClose={() => setCreating(false)} onCreated={() => setCreating(false)} />}
     </div>
   )
 }
 
-function GiftCardForm({ onClose, onCreated }: { onClose: () => void; onCreated: (g: GiftCard) => void }) {
+function GiftCardForm({ businessId, onClose, onCreated }: { businessId: string; onClose: () => void; onCreated: () => void }) {
   const [amount, setAmount] = useState(PRESETS[0].toString())
   const [customAmount, setCustomAmount] = useState('')
   const [sender, setSender] = useState('')
@@ -82,16 +84,19 @@ function GiftCardForm({ onClose, onCreated }: { onClose: () => void; onCreated: 
     setError(null)
     setSaving(true)
     try {
-      const g = await api.post<GiftCard>('/gift-cards', {
-        initial_balance: Number(customAmount || amount),
-        sender_name: sender || null,
-        recipient_name: recipientName,
-        recipient_contact: recipientContact,
+      await createGiftCard({
+        businessId,
+        initialBalance: Number(customAmount || amount),
+        senderName: sender || null,
+        recipientName,
+        recipientContact,
         message: message || null,
+        deliveryDate: null,
+        expiresAt: null,
       })
-      onCreated(g)
+      onCreated()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not create gift card')
+      setError(getFirebaseErrorMessage(err))
     } finally {
       setSaving(false)
     }

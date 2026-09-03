@@ -2,13 +2,13 @@ import { useState, type FormEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/auth/AuthContext'
 import { Banner, Button, Input, Label } from '@/components/ui'
-import { ApiError } from '@/api/client'
+import { getFirebaseErrorMessage } from '@/firebase/errors'
 
 export default function Login() {
   const { login } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const [identifier, setIdentifier] = useState('')
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -18,11 +18,14 @@ export default function Login() {
     setError(null)
     setLoading(true)
     try {
-      const user = await login(identifier, password)
+      await login(email, password)
+      // AuthContext's onAuthStateChanged listener resolves `user` (incl. has_business)
+      // asynchronously; RequireAuth/RequireBusiness route guards handle sending the
+      // seller to the right place once it does, so we just go to a neutral landing spot.
       const from = (location.state as { from?: Location })?.from?.pathname
-      navigate(from || (user.has_business ? '/dashboard' : '/onboarding'), { replace: true })
+      navigate(from || '/dashboard', { replace: true })
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Something went wrong. Please try again.')
+      setError(getFirebaseErrorMessage(err))
     } finally {
       setLoading(false)
     }
@@ -41,8 +44,8 @@ export default function Login() {
         <form onSubmit={onSubmit} className="mt-6 space-y-4">
           {error && <Banner tone="danger">{error}</Banner>}
           <div>
-            <Label htmlFor="identifier">Email or phone</Label>
-            <Input id="identifier" value={identifier} onChange={(e) => setIdentifier(e.target.value)} required autoFocus />
+            <Label htmlFor="email">Email</Label>
+            <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
           </div>
           <div>
             <Label htmlFor="password">Password</Label>

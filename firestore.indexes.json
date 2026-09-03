@@ -1,0 +1,58 @@
+{
+  "indexes": [
+    { "collectionGroup": "products", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "businessId", "order": "ASCENDING" },
+      { "fieldPath": "status", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "products", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "businessId", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "orders", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "businessId", "order": "ASCENDING" },
+      { "fieldPath": "status", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "orders", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "businessId", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "orders", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "customerId", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "customers", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "businessId", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "customers", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "businessId", "order": "ASCENDING" },
+      { "fieldPath": "phone", "order": "ASCENDING" }
+    ]},
+    { "collectionGroup": "vouchers", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "businessId", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "vouchers", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "businessId", "order": "ASCENDING" },
+      { "fieldPath": "code", "order": "ASCENDING" }
+    ]},
+    { "collectionGroup": "giftCards", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "businessId", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "giftCards", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "code", "order": "ASCENDING" }
+    ]},
+    { "collectionGroup": "notifications", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "userId", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]},
+    { "collectionGroup": "businesses", "queryScope": "COLLECTION", "fields": [
+      { "fieldPath": "status", "order": "ASCENDING" },
+      { "fieldPath": "createdAt", "order": "DESCENDING" }
+    ]}
+  ],
+  "fieldOverrides": []
+}

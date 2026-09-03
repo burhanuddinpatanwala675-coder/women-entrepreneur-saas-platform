@@ -1,17 +1,28 @@
-# Backend
-backend/venv/
-backend/__pycache__/
-backend/**/__pycache__/
-backend/uploads/*
-!backend/uploads/.gitkeep
-backend/uvicorn.log
-backend/smoke_test.sh
+# Backend (legacy FastAPI/Postgres — kept for reference only, see ARCHITECTURE.md)
+legacy-postgres-backend/venv/
+legacy-postgres-backend/__pycache__/
+legacy-postgres-backend/**/__pycache__/
+legacy-postgres-backend/uploads/*
+!legacy-postgres-backend/uploads/.gitkeep
+legacy-postgres-backend/uvicorn.log
+legacy-postgres-backend/smoke_test.sh
 *.pyc
 
 # Frontend
 frontend/node_modules/
 frontend/dist/
 frontend/vite.log
+
+# Firebase
+functions/node_modules/
+functions/lib/
+scripts/node_modules/
+.firebase/
+firebase-debug*.log
+firestore-debug.log
+ui-debug.log
+*firebase-adminsdk*.json
+service-account*.json
 
 # Env
 .env

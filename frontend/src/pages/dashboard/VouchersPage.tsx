@@ -1,37 +1,55 @@
 import { useEffect, useState } from 'react'
-import { api, ApiError } from '@/api/client'
-import type { Voucher } from '@/api/types'
+import { collection, deleteDoc, doc, onSnapshot, query, setDoc, Timestamp, updateDoc, where } from 'firebase/firestore'
+import { db } from '@/firebase/client'
+import { getFirebaseErrorMessage } from '@/firebase/errors'
+import type { VoucherDoc } from '@/firebase/types'
+import { useAuth } from '@/auth/AuthContext'
 import { PageHeader } from '@/components/SellerLayout'
 import { Badge, Banner, Button, Card, EmptyState, Input, Label, Modal, Select } from '@/components/ui'
 
+type Voucher = VoucherDoc & { id: string }
+
 export default function VouchersPage() {
+  const { user } = useAuth()
+  const businessId = user!.businessId!
   const [vouchers, setVouchers] = useState<Voucher[]>([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  function load() {
-    setLoading(true)
-    api
-      .get<Voucher[]>('/vouchers')
-      .then(setVouchers)
-      .finally(() => setLoading(false))
-  }
-  useEffect(load, [])
+  useEffect(() => {
+    const q = query(collection(db, 'vouchers'), where('businessId', '==', businessId))
+    const unsub = onSnapshot(q, (snap) => {
+      const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as VoucherDoc) }))
+      items.sort((a, b) => (b.createdAt?.toMillis() ?? 0) - (a.createdAt?.toMillis() ?? 0))
+      setVouchers(items)
+      setLoading(false)
+    })
+    return unsub
+  }, [businessId])
 
   async function toggleActive(v: Voucher) {
-    const updated = await api.patch<Voucher>(`/vouchers/${v.id}`, { is_active: !v.is_active })
-    setVouchers((prev) => prev.map((x) => (x.id === v.id ? updated : x)))
+    try {
+      await updateDoc(doc(db, 'vouchers', v.id), { isActive: !v.isActive })
+    } catch (err) {
+      setError(getFirebaseErrorMessage(err))
+    }
   }
 
   async function remove(v: Voucher) {
     if (!confirm(`Delete voucher "${v.code}"?`)) return
-    await api.del(`/vouchers/${v.id}`)
-    setVouchers((prev) => prev.filter((x) => x.id !== v.id))
+    await deleteDoc(doc(db, 'vouchers', v.id))
   }
 
   return (
     <div>
       <PageHeader title="Vouchers" subtitle="Discount codes for your customers" action={<Button onClick={() => setCreating(true)}>+ Create Voucher</Button>} />
+
+      {error && (
+        <div className="mb-4">
+          <Banner tone="danger">{error}</Banner>
+        </div>
+      )}
 
       {loading ? (
         <p className="py-10 text-center text-ink-500">Loading…</p>
@@ -50,19 +68,19 @@ export default function VouchersPage() {
                 <div>
                   <p className="font-mono text-lg font-bold text-brand-700">{v.code}</p>
                   <p className="text-sm text-ink-500">
-                    {v.discount_type === 'percentage' ? `${v.discount_value}% off` : `Rs. ${v.discount_value.toLocaleString()} off`}
-                    {v.min_purchase_amount ? ` · min Rs. ${v.min_purchase_amount.toLocaleString()}` : ''}
+                    {v.discountType === 'percentage' ? `${v.discountValue}% off` : `Rs. ${v.discountValue.toLocaleString()} off`}
+                    {v.minPurchaseAmount ? ` · min Rs. ${v.minPurchaseAmount.toLocaleString()}` : ''}
                   </p>
                 </div>
-                <Badge tone={v.is_active ? 'green' : 'gray'}>{v.is_active ? 'Active' : 'Paused'}</Badge>
+                <Badge tone={v.isActive ? 'green' : 'gray'}>{v.isActive ? 'Active' : 'Paused'}</Badge>
               </div>
               <p className="mt-2 text-xs text-ink-500">
-                Used {v.times_used}{v.usage_limit ? ` / ${v.usage_limit}` : ''} times
-                {v.expires_at ? ` · expires ${new Date(v.expires_at).toLocaleDateString()}` : ''}
+                Used {v.timesUsed}{v.usageLimit ? ` / ${v.usageLimit}` : ''} times
+                {v.expiresAt ? ` · expires ${v.expiresAt.toDate().toLocaleDateString()}` : ''}
               </p>
               <div className="mt-3 flex gap-2">
                 <Button size="sm" variant="outline" fullWidth onClick={() => toggleActive(v)}>
-                  {v.is_active ? 'Pause' : 'Activate'}
+                  {v.isActive ? 'Pause' : 'Activate'}
                 </Button>
                 <Button size="sm" variant="ghost" onClick={() => remove(v)}>
                   🗑️
@@ -73,20 +91,12 @@ export default function VouchersPage() {
         </div>
       )}
 
-      {creating && (
-        <VoucherForm
-          onClose={() => setCreating(false)}
-          onCreated={(v) => {
-            setVouchers((prev) => [v, ...prev])
-            setCreating(false)
-          }}
-        />
-      )}
+      {creating && <VoucherForm businessId={businessId} onClose={() => setCreating(false)} onCreated={() => setCreating(false)} />}
     </div>
   )
 }
 
-function VoucherForm({ onClose, onCreated }: { onClose: () => void; onCreated: (v: Voucher) => void }) {
+function VoucherForm({ businessId, onClose, onCreated }: { businessId: string; onClose: () => void; onCreated: () => void }) {
   const [code, setCode] = useState('')
   const [type, setType] = useState<'percentage' | 'fixed'>('percentage')
   const [value, setValue] = useState('')
@@ -101,18 +111,28 @@ function VoucherForm({ onClose, onCreated }: { onClose: () => void; onCreated: (
     setError(null)
     setSaving(true)
     try {
-      const v = await api.post<Voucher>('/vouchers', {
-        code,
-        discount_type: type,
-        discount_value: Number(value),
-        min_purchase_amount: minPurchase ? Number(minPurchase) : null,
-        max_discount_amount: maxDiscount ? Number(maxDiscount) : null,
-        usage_limit: usageLimit ? Number(usageLimit) : null,
-        expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
+      const normalizedCode = code.trim().toUpperCase()
+      const voucherId = `${businessId}_${normalizedCode}`
+      await setDoc(doc(db, 'vouchers', voucherId), {
+        businessId,
+        code: normalizedCode,
+        discountType: type,
+        discountValue: Number(value),
+        minPurchaseAmount: minPurchase ? Number(minPurchase) : null,
+        maxDiscountAmount: maxDiscount ? Number(maxDiscount) : null,
+        usageLimit: usageLimit ? Number(usageLimit) : null,
+        usageLimitPerCustomer: 1,
+        applicableProductIds: null,
+        applicableCategoryIds: null,
+        startsAt: null,
+        expiresAt: expiresAt ? Timestamp.fromDate(new Date(expiresAt)) : null,
+        isActive: true,
+        timesUsed: 0,
+        createdAt: Timestamp.now(),
       })
-      onCreated(v)
+      onCreated()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not create voucher')
+      setError(getFirebaseErrorMessage(err))
     } finally {
       setSaving(false)
     }

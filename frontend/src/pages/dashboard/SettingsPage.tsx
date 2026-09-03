@@ -19,7 +19,7 @@ export default function SettingsPage() {
 
       <Card className="mb-5 p-5">
         <h2 className="font-semibold text-ink-900">Account</h2>
-        <p className="mt-1 text-sm text-ink-700">{user?.full_name}</p>
+        <p className="mt-1 text-sm text-ink-700">{user?.fullName}</p>
         <p className="text-sm text-ink-500">{user?.email || user?.phone}</p>
       </Card>
 

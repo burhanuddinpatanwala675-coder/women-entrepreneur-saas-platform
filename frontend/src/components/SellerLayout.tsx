@@ -55,7 +55,7 @@ export function SellerLayout() {
           ))}
         </nav>
         <div className="border-t border-black/5 p-4">
-          <p className="truncate text-sm font-semibold text-ink-900">{user?.full_name}</p>
+          <p className="truncate text-sm font-semibold text-ink-900">{user?.fullName}</p>
           <button
             onClick={() => {
               logout()

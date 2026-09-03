@@ -1,15 +1,17 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
-import type { PublicProduct, ProductVariant } from '@/api/types'
+import type { ProductDoc, ProductVariant } from '@/firebase/types'
+
+export type StoreProduct = ProductDoc & { id: string }
 
 export interface CartLine {
-  product: PublicProduct
+  product: StoreProduct
   variant?: ProductVariant
   quantity: number
 }
 
 interface CartContextValue {
   lines: CartLine[]
-  addToCart: (product: PublicProduct, variant: ProductVariant | undefined, quantity: number) => void
+  addToCart: (product: StoreProduct, variant: ProductVariant | undefined, quantity: number) => void
   updateQuantity: (key: string, quantity: number) => void
   removeLine: (key: string) => void
   clear: () => void
@@ -26,7 +28,7 @@ export function lineKey(productId: string, variantId?: string) {
 export function CartProvider({ children }: { children: ReactNode }) {
   const [lines, setLines] = useState<CartLine[]>([])
 
-  function addToCart(product: PublicProduct, variant: ProductVariant | undefined, quantity: number) {
+  function addToCart(product: StoreProduct, variant: ProductVariant | undefined, quantity: number) {
     const key = lineKey(product.id, variant?.id)
     setLines((prev) => {
       const existing = prev.find((l) => lineKey(l.product.id, l.variant?.id) === key)
@@ -50,7 +52,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
   }
 
   const subtotal = useMemo(
-    () => lines.reduce((sum, l) => sum + (l.variant?.price ?? l.product.sale_price ?? l.product.price) * l.quantity, 0),
+    () => lines.reduce((sum, l) => sum + (l.variant?.price ?? l.product.salePrice ?? l.product.price) * l.quantity, 0),
     [lines],
   )
   const count = useMemo(() => lines.reduce((sum, l) => sum + l.quantity, 0), [lines])

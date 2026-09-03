@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { useCart, lineKey } from '@/cart/CartContext'
-import { api, ApiError } from '@/api/client'
-import type { Order } from '@/api/types'
+import { placeOrder, CheckoutError } from '@/firebase/checkout'
+import { getFirebaseErrorMessage } from '@/firebase/errors'
+import { buildWhatsappOrderLink } from '@/firebase/whatsapp'
+import type { OrderItem } from '@/firebase/types'
 import { Banner, Button, Input, Label, Modal } from '@/components/ui'
 import { useStorefront } from './StorefrontContext'
 
@@ -20,7 +22,7 @@ export function CartFab({ onClick }: { onClick: () => void }) {
 
 export function CartDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { lines, subtotal, updateQuantity, removeLine, clear } = useCart()
-  const { slug } = useStorefront()
+  const { business, slug } = useStorefront()
 
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
@@ -28,27 +30,25 @@ export function CartDrawer({ open, onClose }: { open: boolean; onClose: () => vo
   const [giftCardCode, setGiftCardCode] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [placing, setPlacing] = useState(false)
-  const [result, setResult] = useState<{ order: Order; whatsapp_link?: string } | null>(null)
+  const [result, setResult] = useState<{ orderNumber: string; total: number; items: OrderItem[] } | null>(null)
 
-  async function placeOrder() {
+  async function placeOrderClick() {
     setError(null)
     setPlacing(true)
     try {
-      const res = await api.post<{ order: Order; whatsapp_link?: string }>(
-        `/public/stores/${slug}/orders`,
-        {
-          customer: { name, phone },
-          items: lines.map((l) => ({ product_id: l.product.id, product_variant_id: l.variant?.id, quantity: l.quantity })),
-          channel: 'whatsapp',
-          voucher_code: voucherCode || undefined,
-          gift_card_code: giftCardCode || undefined,
-        },
-        { auth: false },
-      )
-      setResult(res)
+      const res = await placeOrder({
+        businessId: slug,
+        items: lines.map((l) => ({ productId: l.product.id, variantId: l.variant?.id, quantity: l.quantity })),
+        customerName: name,
+        customerPhone: phone,
+        channel: 'whatsapp',
+        voucherCode: voucherCode || undefined,
+        giftCardCode: giftCardCode || undefined,
+      })
+      setResult({ orderNumber: res.orderNumber, total: res.total, items: res.items })
       clear()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not place your order. Please try again.')
+      setError(err instanceof CheckoutError ? err.message : getFirebaseErrorMessage(err))
     } finally {
       setPlacing(false)
     }
@@ -62,15 +62,20 @@ export function CartDrawer({ open, onClose }: { open: boolean; onClose: () => vo
   if (!open) return null
 
   if (result) {
+    const whatsappLink = buildWhatsappOrderLink(
+      business.whatsappNumber,
+      { orderNumber: result.orderNumber, items: result.items, total: result.total },
+      name,
+    )
     return (
       <Modal open onClose={closeAndReset} title="Order placed! 🎉">
         <div className="text-center">
           <p className="text-sm text-ink-700">
-            Your order <span className="font-semibold">{result.order.order_number}</span> has been sent to the seller.
+            Your order <span className="font-semibold">{result.orderNumber}</span> has been sent to the seller.
           </p>
-          <p className="mt-1 text-lg font-bold text-ink-900">Total: Rs. {result.order.total.toLocaleString()}</p>
-          {result.whatsapp_link && (
-            <a href={result.whatsapp_link} target="_blank" rel="noreferrer" className="mt-4 block">
+          <p className="mt-1 text-lg font-bold text-ink-900">Total: Rs. {result.total.toLocaleString()}</p>
+          {whatsappLink && (
+            <a href={whatsappLink} target="_blank" rel="noreferrer" className="mt-4 block">
               <Button fullWidth>💬 Confirm on WhatsApp</Button>
             </a>
           )}
@@ -91,7 +96,7 @@ export function CartDrawer({ open, onClose }: { open: boolean; onClose: () => vo
           <div className="space-y-3">
             {lines.map((l) => {
               const key = lineKey(l.product.id, l.variant?.id)
-              const price = l.variant?.price ?? l.product.sale_price ?? l.product.price
+              const price = l.variant?.price ?? l.product.salePrice ?? l.product.price
               return (
                 <div key={key} className="flex items-center gap-3">
                   {l.product.images[0] && <img src={l.product.images[0].url} className="h-14 w-14 rounded-lg object-cover" />}
@@ -139,7 +144,7 @@ export function CartDrawer({ open, onClose }: { open: boolean; onClose: () => vo
             </div>
           </div>
 
-          <Button fullWidth size="lg" loading={placing} disabled={!name.trim() || !phone.trim()} onClick={placeOrder}>
+          <Button fullWidth size="lg" loading={placing} disabled={!name.trim() || !phone.trim()} onClick={placeOrderClick}>
             Order on WhatsApp
           </Button>
         </div>
