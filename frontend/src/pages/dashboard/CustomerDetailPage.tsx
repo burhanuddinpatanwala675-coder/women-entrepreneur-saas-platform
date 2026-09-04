@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { collection, doc, getDoc, onSnapshot, query, where } from 'firebase/firestore'
 import { db } from '@/firebase/client'
 import type { CustomerDoc, OrderDoc } from '@/firebase/types'
+import { toWhatsappDigits } from '@/firebase/whatsapp'
 import { Badge, Card } from '@/components/ui'
 
 type Customer = CustomerDoc & { id: string }
@@ -56,7 +57,7 @@ export default function CustomerDetailPage() {
           </div>
         </div>
 
-        <a href={`https://wa.me/${customer.phone.replace(/\D/g, '')}`} target="_blank" rel="noreferrer" className="mt-4 block">
+        <a href={`https://wa.me/${toWhatsappDigits(customer.phone)}`} target="_blank" rel="noreferrer" className="mt-4 block">
           <button className="w-full rounded-xl bg-green-600 py-3 font-semibold text-white">💬 Message on WhatsApp</button>
         </a>
       </Card>

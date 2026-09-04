@@ -4,6 +4,7 @@ import { doc, getDoc, onSnapshot, serverTimestamp, updateDoc } from 'firebase/fi
 import { db } from '@/firebase/client'
 import { getFirebaseErrorMessage } from '@/firebase/errors'
 import type { CustomerDoc, OrderDoc, OrderStatus } from '@/firebase/types'
+import { toWhatsappDigits } from '@/firebase/whatsapp'
 import { Badge, Banner, Button, Card } from '@/components/ui'
 
 type Order = OrderDoc & { id: string }
@@ -128,7 +129,7 @@ export default function OrderDetailPage() {
       </Card>
 
       {customer?.phone && (
-        <a href={`https://wa.me/${customer.phone.replace(/\D/g, '')}`} target="_blank" rel="noreferrer" className="mt-4 block">
+        <a href={`https://wa.me/${toWhatsappDigits(customer.phone)}`} target="_blank" rel="noreferrer" className="mt-4 block">
           <Button variant="outline" fullWidth>
             💬 Message customer on WhatsApp
           </Button>
