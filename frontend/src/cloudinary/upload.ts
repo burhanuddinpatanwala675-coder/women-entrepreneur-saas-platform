@@ -13,6 +13,8 @@
 // an accepted, standard trade-off for a small, low-traffic storefront staying card-free —
 // see the Cloudinary setup steps in README.md.
 
+import { compressImage, ImageTooLargeError } from './compress'
+
 export class ImageUploadError extends Error {}
 
 export interface UploadedImage {
@@ -44,8 +46,20 @@ function getConfig() {
 export async function uploadImage(file: File, folder: string): Promise<UploadedImage> {
   const { cloudName, uploadPreset } = getConfig()
 
+  // Resize/re-encode before this ever leaves the browser — see ./compress.ts for why.
+  // ImageTooLargeError's message is written to be shown to the user as-is (each call site
+  // already does `setError(getFirebaseErrorMessage(err))`, which falls through to
+  // `err.message` for any plain Error).
+  let toUpload: File
+  try {
+    toUpload = await compressImage(file)
+  } catch (err) {
+    if (err instanceof ImageTooLargeError) throw new ImageUploadError(err.message)
+    throw err
+  }
+
   const form = new FormData()
-  form.append('file', file)
+  form.append('file', toUpload)
   form.append('upload_preset', uploadPreset)
   form.append('folder', folder)
 
