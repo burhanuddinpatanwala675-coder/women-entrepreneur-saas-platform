@@ -104,6 +104,12 @@ export default function OrderDetailPage() {
               <span>- Rs. {order.discountTotal.toLocaleString()}</span>
             </div>
           )}
+          {(order.deliveryFee ?? 0) > 0 && (
+            <div className="flex justify-between text-ink-500">
+              <span>Delivery</span>
+              <span>Rs. {order.deliveryFee.toLocaleString()}</span>
+            </div>
+          )}
           <div className="flex justify-between text-base font-bold text-ink-900">
             <span>Total</span>
             <span>Rs. {order.total.toLocaleString()}</span>

@@ -30,7 +30,14 @@ export function CartDrawer({ open, onClose }: { open: boolean; onClose: () => vo
   const [giftCardCode, setGiftCardCode] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [placing, setPlacing] = useState(false)
-  const [result, setResult] = useState<{ orderNumber: string; total: number; items: OrderItem[] } | null>(null)
+  const [result, setResult] = useState<{
+    orderNumber: string
+    subtotal: number
+    deliveryFee: number
+    total: number
+    items: OrderItem[]
+  } | null>(null)
+  const deliveryFee = business.storeSettings.deliveryFee ?? 0
 
   async function placeOrderClick() {
     setError(null)
@@ -45,7 +52,7 @@ export function CartDrawer({ open, onClose }: { open: boolean; onClose: () => vo
         voucherCode: voucherCode || undefined,
         giftCardCode: giftCardCode || undefined,
       })
-      setResult({ orderNumber: res.orderNumber, total: res.total, items: res.items })
+      setResult({ orderNumber: res.orderNumber, subtotal: res.subtotal, deliveryFee: res.deliveryFee, total: res.total, items: res.items })
       clear()
     } catch (err) {
       setError(err instanceof CheckoutError ? err.message : getFirebaseErrorMessage(err))
@@ -64,7 +71,7 @@ export function CartDrawer({ open, onClose }: { open: boolean; onClose: () => vo
   if (result) {
     const whatsappLink = buildWhatsappOrderLink(
       business.whatsappNumber,
-      { orderNumber: result.orderNumber, items: result.items, total: result.total },
+      { orderNumber: result.orderNumber, items: result.items, subtotal: result.subtotal, deliveryFee: result.deliveryFee, total: result.total },
       name,
     )
     return (
@@ -73,6 +80,11 @@ export function CartDrawer({ open, onClose }: { open: boolean; onClose: () => vo
           <p className="text-sm text-ink-700">
             Your order <span className="font-semibold">{result.orderNumber}</span> has been sent to the seller.
           </p>
+          {result.deliveryFee > 0 && (
+            <p className="mt-2 text-xs text-ink-500">
+              Subtotal: Rs. {result.subtotal.toLocaleString()} + Delivery: Rs. {result.deliveryFee.toLocaleString()}
+            </p>
+          )}
           <p className="mt-1 text-lg font-bold text-ink-900">Total: Rs. {result.total.toLocaleString()}</p>
           {whatsappLink && (
             <a href={whatsappLink} target="_blank" rel="noreferrer" className="mt-4 block">
@@ -122,9 +134,21 @@ export function CartDrawer({ open, onClose }: { open: boolean; onClose: () => vo
             })}
           </div>
 
-          <div className="flex justify-between border-t border-black/5 pt-3 text-base font-bold text-ink-900">
-            <span>Subtotal</span>
-            <span>Rs. {subtotal.toLocaleString()}</span>
+          <div className="space-y-1 border-t border-black/5 pt-3">
+            <div className="flex justify-between text-sm text-ink-500">
+              <span>Subtotal</span>
+              <span>Rs. {subtotal.toLocaleString()}</span>
+            </div>
+            {deliveryFee > 0 && (
+              <div className="flex justify-between text-sm text-ink-500">
+                <span>Delivery</span>
+                <span>Rs. {deliveryFee.toLocaleString()}</span>
+              </div>
+            )}
+            <div className="flex justify-between text-base font-bold text-ink-900">
+              <span>Total</span>
+              <span>Rs. {(subtotal + deliveryFee).toLocaleString()}</span>
+            </div>
           </div>
 
           {error && <Banner tone="danger">{error}</Banner>}

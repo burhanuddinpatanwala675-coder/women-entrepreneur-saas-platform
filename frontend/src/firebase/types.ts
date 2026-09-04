@@ -41,6 +41,10 @@ export interface StoreSettings {
   codEnabled: boolean
   manualPaymentInstructions: string | null
   announcementBanner: string | null
+  /** Flat delivery charge (Rs.) added on top of every order's subtotal at checkout. 0 means
+   *  free delivery. Older business docs created before this field existed won't have it —
+   *  always read it as `storeSettings.deliveryFee ?? 0`, never assume it's present. */
+  deliveryFee: number
 }
 
 export interface BusinessDoc {
@@ -129,6 +133,10 @@ export interface OrderDoc {
   items: OrderItem[]
   subtotal: number
   discountTotal: number
+  /** Snapshot of the business's delivery fee at the moment this order was placed — stored
+   *  on the order rather than only read live off the business doc, so a later change to the
+   *  seller's delivery fee doesn't rewrite the history of past orders. */
+  deliveryFee: number
   total: number
   voucherId: string | null
   giftCardId: string | null

@@ -28,7 +28,12 @@ export default function StoreSettingsPage() {
 
   useEffect(() => {
     const unsub = onSnapshot(doc(db, 'businesses', businessId), (snap) => {
-      if (snap.exists()) setBusiness({ id: snap.id, ...(snap.data() as BusinessDoc) })
+      if (!snap.exists()) return
+      const data = snap.data() as BusinessDoc
+      // Business docs created before delivery charges existed won't have this field —
+      // default it here so the input has a real number and `save()` never writes
+      // `undefined` (which the Firestore SDK rejects outright).
+      setBusiness({ id: snap.id, ...data, storeSettings: { ...data.storeSettings, deliveryFee: data.storeSettings?.deliveryFee ?? 0 } })
     })
     return unsub
   }, [businessId])
@@ -206,6 +211,29 @@ export default function StoreSettingsPage() {
               placeholder="@yourbusiness"
             />
           </div>
+        </div>
+      </Card>
+
+      <Card className="mb-4 p-5">
+        <h2 className="mb-3 font-semibold text-ink-900">Delivery</h2>
+        <div>
+          <Label htmlFor="s-delivery">Delivery charges (Rs.)</Label>
+          <Input
+            id="s-delivery"
+            type="number"
+            min={0}
+            value={business.storeSettings.deliveryFee ?? 0}
+            onChange={(e) =>
+              setBusiness({
+                ...business,
+                storeSettings: { ...business.storeSettings, deliveryFee: Math.max(0, Number(e.target.value) || 0) },
+              })
+            }
+            placeholder="0"
+          />
+          <p className="mt-1 text-xs text-ink-500">
+            Added automatically to every customer's total at checkout. Leave at 0 for free delivery.
+          </p>
         </div>
       </Card>
 

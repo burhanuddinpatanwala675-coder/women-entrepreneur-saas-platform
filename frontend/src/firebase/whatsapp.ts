@@ -31,7 +31,7 @@ export function toWhatsappDigits(raw: string): string {
  */
 export function buildWhatsappOrderLink(
   sellerWhatsappNumber: string | null | undefined,
-  order: { orderNumber: string; items: OrderItem[]; total: number },
+  order: { orderNumber: string; items: OrderItem[]; subtotal?: number; deliveryFee?: number; total: number },
   customerName: string,
 ): string | null {
   if (!sellerWhatsappNumber) return null
@@ -41,12 +41,18 @@ export function buildWhatsappOrderLink(
     return `• ${item.productNameSnapshot}${variant} x${item.quantity} — Rs. ${item.lineTotal.toLocaleString()}`
   })
 
+  const totalLines = [
+    order.subtotal != null ? `Subtotal: Rs. ${order.subtotal.toLocaleString()}` : null,
+    order.deliveryFee ? `Delivery: Rs. ${order.deliveryFee.toLocaleString()}` : null,
+    `Total: Rs. ${order.total.toLocaleString()}`,
+  ].filter((l): l is string => l != null)
+
   const message = [
     `Hi! I'd like to order (${order.orderNumber}):`,
     '',
     ...lines,
     '',
-    `Total: Rs. ${order.total.toLocaleString()}`,
+    ...totalLines,
     `Name: ${customerName}`,
   ].join('\n')
 

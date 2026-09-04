@@ -91,11 +91,20 @@ service cloud.firestore {
     // server code, an accepted cost of staying card-free.
     function isValidOrderTransaction() {
       let data = request.resource.data;
-      return existsAfter(/databases/$(database)/documents/businesses/$(data.businessId)) &&
-        getAfter(/databases/$(database)/documents/businesses/$(data.businessId)).data.status == "active" &&
+      // Path only, no dereference yet — must check existsAfter() before calling getAfter()
+      // .data below, since dereferencing a nonexistent doc errors out rule evaluation
+      // instead of cleanly denying.
+      let bizPath = /databases/$(database)/documents/businesses/$(data.businessId);
+      return existsAfter(bizPath) &&
+        getAfter(bizPath).data.status == "active" &&
         data.status == "new" &&
-        data.subtotal >= 0 && data.discountTotal >= 0 && data.total >= 0 &&
-        data.total == data.subtotal - data.discountTotal &&
+        data.subtotal >= 0 && data.discountTotal >= 0 && data.deliveryFee >= 0 && data.total >= 0 &&
+        // storeSettings.deliveryFee predates some existing business docs — .get(key, default)
+        // reads it as free delivery (0) instead of erroring on a missing field. Comparing
+        // against the business's own configured fee (rather than only checking >= 0) means a
+        // customer's browser can't zero out or inflate the delivery charge on its own.
+        data.deliveryFee == getAfter(bizPath).data.storeSettings.get("deliveryFee", 0) &&
+        data.total == data.subtotal - data.discountTotal + data.deliveryFee &&
         data.items.size() > 0 && data.items.size() <= 50; // sanity cap, not a real business limit
     }
 

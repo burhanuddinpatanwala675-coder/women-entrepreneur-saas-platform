@@ -174,6 +174,7 @@ const DEFAULT_STORE_SETTINGS = {
   codEnabled: true,
   manualPaymentInstructions: null as string | null,
   announcementBanner: null as string | null,
+  deliveryFee: 0,
 }
 
 /**

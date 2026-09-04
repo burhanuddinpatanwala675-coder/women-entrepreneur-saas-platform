@@ -33,6 +33,9 @@ export interface PlaceOrderInput {
 export interface PlaceOrderResult {
   orderId: string
   orderNumber: string
+  subtotal: number
+  discountTotal: number
+  deliveryFee: number
   total: number
   items: OrderItem[]
 }
@@ -159,7 +162,11 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
       discountTotal += giftCardApplied
     }
 
-    const total = subtotal - discountTotal
+    // Snapshot the fee at order time (see OrderDoc.deliveryFee) rather than reading it live
+    // later — a seller changing their delivery fee tomorrow shouldn't rewrite today's order.
+    // Older business docs predate this field, so default to free delivery if it's missing.
+    const deliveryFee = business.storeSettings?.deliveryFee ?? 0
+    const total = subtotal - discountTotal + deliveryFee
 
     // ---------------- WRITES ----------------
     const now = serverTimestamp()
@@ -173,6 +180,7 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
       items,
       subtotal,
       discountTotal,
+      deliveryFee,
       total,
       voucherId: voucherRef ? voucherRef.id : null,
       giftCardId: giftCardRef ? giftCardRef.id : null,
@@ -225,6 +233,6 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
       tx.set(txnRef, { orderId: orderRef.id, amount: giftCardApplied, createdAt: now })
     }
 
-    return { orderId: orderRef.id, orderNumber, total, items }
+    return { orderId: orderRef.id, orderNumber, subtotal, discountTotal, deliveryFee, total, items }
   })
 }

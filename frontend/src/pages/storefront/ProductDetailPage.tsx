@@ -208,7 +208,17 @@ function QuickBuyModal({
   const { business } = useStorefront()
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState<{ orderNumber: string; total: number; items: OrderItem[] } | null>(null)
+  const [result, setResult] = useState<{
+    orderNumber: string
+    subtotal: number
+    deliveryFee: number
+    total: number
+    items: OrderItem[]
+  } | null>(null)
+
+  const unitPrice = variant?.price ?? product.salePrice ?? product.price
+  const subtotal = unitPrice * quantity
+  const deliveryFee = business.storeSettings.deliveryFee ?? 0
 
   async function submit() {
     setError(null)
@@ -221,7 +231,7 @@ function QuickBuyModal({
         customerPhone: phone,
         channel: 'whatsapp',
       })
-      setResult({ orderNumber: res.orderNumber, total: res.total, items: res.items })
+      setResult({ orderNumber: res.orderNumber, subtotal: res.subtotal, deliveryFee: res.deliveryFee, total: res.total, items: res.items })
     } catch (err) {
       setError(err instanceof CheckoutError ? err.message : getFirebaseErrorMessage(err))
     } finally {
@@ -230,7 +240,11 @@ function QuickBuyModal({
   }
 
   const whatsappLink = result
-    ? buildWhatsappOrderLink(business.whatsappNumber, { orderNumber: result.orderNumber, items: result.items, total: result.total }, name)
+    ? buildWhatsappOrderLink(
+        business.whatsappNumber,
+        { orderNumber: result.orderNumber, items: result.items, subtotal: result.subtotal, deliveryFee: result.deliveryFee, total: result.total },
+        name,
+      )
     : null
 
   return (
@@ -240,6 +254,11 @@ function QuickBuyModal({
           <p className="text-sm text-ink-700">
             Order <span className="font-semibold">{result.orderNumber}</span> — Rs. {result.total.toLocaleString()}
           </p>
+          {result.deliveryFee > 0 && (
+            <p className="mt-1 text-xs text-ink-500">
+              Subtotal: Rs. {result.subtotal.toLocaleString()} + Delivery: Rs. {result.deliveryFee.toLocaleString()}
+            </p>
+          )}
           {whatsappLink && (
             <a href={whatsappLink} target="_blank" rel="noreferrer" className="mt-4 block">
               <Button fullWidth>💬 Confirm on WhatsApp</Button>
@@ -251,9 +270,16 @@ function QuickBuyModal({
         </div>
       ) : (
         <div className="space-y-3">
-          <p className="text-sm text-ink-500">
-            {product.name} {variant ? `(${variant.name})` : ''} × {quantity}
-          </p>
+          <div className="text-sm text-ink-500">
+            <p>
+              {product.name} {variant ? `(${variant.name})` : ''} × {quantity}
+            </p>
+            {deliveryFee > 0 && (
+              <p className="mt-1">
+                Rs. {subtotal.toLocaleString()} + Rs. {deliveryFee.toLocaleString()} delivery = Rs. {(subtotal + deliveryFee).toLocaleString()}
+              </p>
+            )}
+          </div>
           {error && <Banner tone="danger">{error}</Banner>}
           <div>
             <Label htmlFor="qb-name">Your name</Label>
