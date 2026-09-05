@@ -5,7 +5,7 @@ import { db } from '@/firebase/client'
 import type { OrderDoc, OrderStatus } from '@/firebase/types'
 import { useAuth } from '@/auth/AuthContext'
 import { PageHeader } from '@/components/SellerLayout'
-import { Badge, Card, EmptyState } from '@/components/ui'
+import { Badge, Card, EmptyState, Modal } from '@/components/ui'
 
 type Order = OrderDoc & { id: string }
 
@@ -36,6 +36,7 @@ export default function OrdersPage() {
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<OrderStatus | 'all'>('all')
+  const [itemsOrder, setItemsOrder] = useState<Order | null>(null)
 
   useEffect(() => {
     const q = query(collection(db, 'orders'), where('businessId', '==', businessId))
@@ -79,19 +80,42 @@ export default function OrdersPage() {
       ) : (
         <Card className="divide-y divide-black/5">
           {filtered.map((o) => (
-            <Link key={o.id} to={`/dashboard/orders/${o.id}`} className="flex items-center justify-between px-4 py-3.5">
-              <div>
+            <div key={o.id} className="flex items-center justify-between gap-2 px-4 py-3.5">
+              <Link to={`/dashboard/orders/${o.id}`} className="min-w-0 flex-1">
                 <p className="font-semibold text-ink-900">{o.orderNumber}</p>
                 <p className="text-xs text-ink-500">{o.createdAt?.toDate().toLocaleDateString() ?? '—'}</p>
-              </div>
-              <div className="text-right">
+              </Link>
+              <button
+                onClick={() => setItemsOrder(o)}
+                className="shrink-0 rounded-full bg-cream-100 px-3 py-1.5 text-xs font-semibold text-ink-700"
+              >
+                🧾 {o.items.length} item{o.items.length === 1 ? '' : 's'}
+              </button>
+              <Link to={`/dashboard/orders/${o.id}`} className="shrink-0 text-right">
                 <p className="font-semibold text-ink-900">Rs. {o.total.toLocaleString()}</p>
                 <Badge tone={STATUS_TONE[o.status]}>{o.status}</Badge>
-              </div>
-            </Link>
+              </Link>
+            </div>
           ))}
         </Card>
       )}
+
+      <Modal open={!!itemsOrder} onClose={() => setItemsOrder(null)} title={itemsOrder ? `Items — ${itemsOrder.orderNumber}` : 'Items'}>
+        {itemsOrder && (
+          <div className="divide-y divide-black/5">
+            {itemsOrder.items.map((item, i) => (
+              <div key={i} className="flex justify-between py-2 text-sm">
+                <div>
+                  <p className="font-medium text-ink-900">{item.productNameSnapshot}</p>
+                  {item.variantNameSnapshot && <p className="text-ink-500">{item.variantNameSnapshot}</p>}
+                  <p className="text-ink-500">Qty {item.quantity}</p>
+                </div>
+                <p className="font-medium text-ink-900">Rs. {item.lineTotal.toLocaleString()}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }
