@@ -104,14 +104,22 @@ export default function OrdersPage() {
         {itemsOrder && (
           <div className="divide-y divide-black/5">
             {itemsOrder.items.map((item, i) => (
-              <div key={i} className="flex justify-between py-2 text-sm">
-                <div>
-                  <p className="font-medium text-ink-900">{item.productNameSnapshot}</p>
+              <Link
+                key={i}
+                to={`/dashboard/products?open=${item.productId}`}
+                onClick={() => setItemsOrder(null)}
+                className="flex items-center justify-between gap-3 py-2 text-sm"
+              >
+                <div className="min-w-0">
+                  <p className="truncate font-medium text-ink-900">{item.productNameSnapshot}</p>
                   {item.variantNameSnapshot && <p className="text-ink-500">{item.variantNameSnapshot}</p>}
                   <p className="text-ink-500">Qty {item.quantity}</p>
                 </div>
-                <p className="font-medium text-ink-900">Rs. {item.lineTotal.toLocaleString()}</p>
-              </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <p className="font-medium text-ink-900">Rs. {item.lineTotal.toLocaleString()}</p>
+                  <span className="text-ink-300">›</span>
+                </div>
+              </Link>
             ))}
           </div>
         )}

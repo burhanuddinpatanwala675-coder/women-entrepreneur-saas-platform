@@ -11,11 +11,49 @@ type Order = OrderDoc & { id: string }
 type Customer = CustomerDoc & { id: string }
 type Product = ProductDoc & { id: string }
 
-function isToday(ts: { toDate: () => Date } | null | undefined) {
-  if (!ts) return false
-  const d = ts.toDate()
+type Range = 'today' | 'week' | 'month' | 'year' | 'all'
+
+const RANGES: { key: Range; label: string }[] = [
+  { key: 'today', label: 'Today' },
+  { key: 'week', label: 'Week' },
+  { key: 'month', label: 'Month' },
+  { key: 'year', label: 'Year' },
+  { key: 'all', label: 'All time' },
+]
+
+/** Start of the selected window, or null for "all time" (no lower bound). */
+function rangeStart(range: Range): Date | null {
   const now = new Date()
-  return d.toDateString() === now.toDateString()
+  switch (range) {
+    case 'today': {
+      const d = new Date(now)
+      d.setHours(0, 0, 0, 0)
+      return d
+    }
+    case 'week': {
+      const d = new Date(now)
+      d.setDate(d.getDate() - 7)
+      return d
+    }
+    case 'month': {
+      const d = new Date(now)
+      d.setMonth(d.getMonth() - 1)
+      return d
+    }
+    case 'year': {
+      const d = new Date(now)
+      d.setFullYear(d.getFullYear() - 1)
+      return d
+    }
+    case 'all':
+      return null
+  }
+}
+
+function withinRange(ts: { toMillis: () => number } | null | undefined, start: Date | null): boolean {
+  if (!start) return true // "all time"
+  if (!ts) return false
+  return ts.toMillis() >= start.getTime()
 }
 
 export default function DashboardHome() {
@@ -26,6 +64,7 @@ export default function DashboardHome() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [products, setProducts] = useState<Product[]>([])
   const [loading, setLoading] = useState(true)
+  const [range, setRange] = useState<Range>('today')
 
   useEffect(() => {
     let loaded = { business: false, orders: false, customers: false, products: false }
@@ -60,12 +99,16 @@ export default function DashboardHome() {
     return () => unsubs.forEach((u) => u())
   }, [businessId])
 
-  const todayOrders = useMemo(() => orders.filter((o) => isToday(o.createdAt)), [orders])
-  const todaySales = useMemo(
-    () => todayOrders.filter((o) => o.status !== 'cancelled').reduce((sum, o) => sum + o.total, 0),
-    [todayOrders],
+  const start = useMemo(() => rangeStart(range), [range])
+  const rangeOrders = useMemo(() => orders.filter((o) => withinRange(o.createdAt, start)), [orders, start])
+  const rangeSales = useMemo(
+    () => rangeOrders.filter((o) => o.status !== 'cancelled').reduce((sum, o) => sum + o.total, 0),
+    [rangeOrders],
   )
-  const newCustomersToday = useMemo(() => customers.filter((c) => isToday(c.createdAt)).length, [customers])
+  const newCustomersInRange = useMemo(() => customers.filter((c) => withinRange(c.createdAt, start)).length, [customers, start])
+  // Deliberately NOT scoped to the selected range — this is "what needs your attention right
+  // now", not a historical figure, so it always reflects the live backlog regardless of
+  // which time window is selected above.
   const pendingOrders = useMemo(() => orders.filter((o) => o.status === 'new' || o.status === 'confirmed').length, [orders])
 
   const checklist = [
@@ -96,11 +139,26 @@ export default function DashboardHome() {
         </Card>
       )}
 
-      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-500">Today's overview</h2>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-500">Overview</h2>
+        <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+          {RANGES.map((r) => (
+            <button
+              key={r.key}
+              onClick={() => setRange(r.key)}
+              className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${
+                range === r.key ? 'bg-brand-600 text-white' : 'bg-white text-ink-700'
+              }`}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard label="Total sales" value={`Rs. ${todaySales.toLocaleString()}`} />
-        <StatCard label="Orders" value={todayOrders.length} />
-        <StatCard label="New customers" value={newCustomersToday} />
+        <StatCard label="Total sales" value={`Rs. ${rangeSales.toLocaleString()}`} />
+        <StatCard label="Orders" value={rangeOrders.length} />
+        <StatCard label="New customers" value={newCustomersInRange} />
         <StatCard label="Pending orders" value={pendingOrders} tone={pendingOrders > 0 ? 'amber' : 'brand'} />
       </div>
 

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   collection,
   deleteDoc,
@@ -50,6 +51,7 @@ export default function ProductsPage() {
   const [filter, setFilter] = useState<ProductStatus | 'all'>('all')
   const [editing, setEditing] = useState<Product | 'new' | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [searchParams, setSearchParams] = useSearchParams()
 
   useEffect(() => {
     const q = query(collection(db, 'products'), where('businessId', '==', businessId))
@@ -68,6 +70,31 @@ export default function ProductsPage() {
     )
     return unsub
   }, [businessId])
+
+  // Deep-link support: an order's item list links here as /dashboard/products?open=<id>
+  // so a seller can jump straight from "what did they order" to that product's editor.
+  // Runs once products have loaded so the lookup can actually find the product; clears the
+  // param immediately after so closing the editor and revisiting this page later doesn't
+  // reopen it.
+  useEffect(() => {
+    const openId = searchParams.get('open')
+    if (!openId || loading) return
+    const found = products.find((p) => p.id === openId)
+    if (found) {
+      setEditing(found)
+    } else {
+      setError('That product could not be found — it may have been deleted.')
+    }
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.delete('open')
+        return next
+      },
+      { replace: true },
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, products])
 
   const filtered = filter === 'all' ? products : products.filter((p) => p.status === filter)
 
