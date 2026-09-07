@@ -101,15 +101,22 @@ export default function DashboardHome() {
 
   const start = useMemo(() => rangeStart(range), [range])
   const rangeOrders = useMemo(() => orders.filter((o) => withinRange(o.createdAt, start)), [orders, start])
+  // A cancelled order isn't a real sale or a real order — excluded from both stats below,
+  // same reasoning as the sales total.
+  const rangeOrdersExcludingCancelled = useMemo(() => rangeOrders.filter((o) => o.status !== 'cancelled'), [rangeOrders])
   const rangeSales = useMemo(
-    () => rangeOrders.filter((o) => o.status !== 'cancelled').reduce((sum, o) => sum + o.total, 0),
-    [rangeOrders],
+    () => rangeOrdersExcludingCancelled.reduce((sum, o) => sum + o.total, 0),
+    [rangeOrdersExcludingCancelled],
   )
   const newCustomersInRange = useMemo(() => customers.filter((c) => withinRange(c.createdAt, start)).length, [customers, start])
   // Deliberately NOT scoped to the selected range — this is "what needs your attention right
   // now", not a historical figure, so it always reflects the live backlog regardless of
   // which time window is selected above.
   const pendingOrders = useMemo(() => orders.filter((o) => o.status === 'new' || o.status === 'confirmed').length, [orders])
+  // Cancelled orders are excluded here too — a seller who cancels an order shouldn't keep
+  // seeing it front and center; it's still fully visible in Orders > Cancelled for records.
+  const recentOrders = useMemo(() => orders.filter((o) => o.status !== 'cancelled').slice(0, 5), [orders])
+  const outOfStockProducts = useMemo(() => products.filter((p) => p.status === 'out_of_stock'), [products])
 
   const checklist = [
     { done: products.length > 0, label: 'Add your first product', to: '/dashboard/products' },
@@ -126,6 +133,28 @@ export default function DashboardHome() {
   return (
     <div>
       <PageHeader title={`Welcome back, ${user?.fullName.split(' ')[0]} 👋`} subtitle={business?.name} />
+
+      {outOfStockProducts.length > 0 && (
+        <Card className="mb-4 flex flex-wrap items-center justify-between gap-3 border-red-200 bg-red-50 p-4">
+          <div>
+            <p className="text-sm font-semibold text-red-700">
+              ⚠️ {outOfStockProducts.length} product{outOfStockProducts.length === 1 ? ' is' : 's are'} out of stock
+            </p>
+            <p className="text-sm text-ink-700">
+              {outOfStockProducts
+                .slice(0, 3)
+                .map((p) => p.name)
+                .join(', ')}
+              {outOfStockProducts.length > 3 ? `, +${outOfStockProducts.length - 3} more` : ''}
+            </p>
+          </div>
+          <Link to="/dashboard/products?filter=out_of_stock">
+            <Button size="sm" variant="outline">
+              Restock now
+            </Button>
+          </Link>
+        </Card>
+      )}
 
       {nextStep && (
         <Card className="mb-6 flex flex-wrap items-center justify-between gap-3 border-brand-200 bg-brand-50 p-4">
@@ -157,7 +186,7 @@ export default function DashboardHome() {
       </div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatCard label="Total sales" value={`Rs. ${rangeSales.toLocaleString()}`} />
-        <StatCard label="Orders" value={rangeOrders.length} />
+        <StatCard label="Orders" value={rangeOrdersExcludingCancelled.length} />
         <StatCard label="New customers" value={newCustomersInRange} />
         <StatCard label="Pending orders" value={pendingOrders} tone={pendingOrders > 0 ? 'amber' : 'brand'} />
       </div>
@@ -184,11 +213,11 @@ export default function DashboardHome() {
         </Link>
       </div>
 
-      {orders.length > 0 && (
+      {recentOrders.length > 0 && (
         <>
           <h2 className="mb-3 mt-8 text-sm font-semibold uppercase tracking-wide text-ink-500">Recent orders</h2>
           <Card className="divide-y divide-black/5">
-            {orders.slice(0, 5).map((o) => (
+            {recentOrders.map((o) => (
               <Link key={o.id} to={`/dashboard/orders/${o.id}`} className="flex items-center justify-between px-4 py-3">
                 <div>
                   <p className="font-medium text-ink-900">{o.orderNumber}</p>

@@ -71,6 +71,27 @@ export default function ProductsPage() {
     return unsub
   }, [businessId])
 
+  // Deep-link support: the dashboard's out-of-stock alert links here as
+  // /dashboard/products?filter=out_of_stock so it opens straight into the matching tab
+  // instead of dropping the seller on "All" and making them find it themselves.
+  useEffect(() => {
+    const filterParam = searchParams.get('filter')
+    if (!filterParam) return
+    const valid: (ProductStatus | 'all')[] = ['all', 'available', 'low_stock', 'out_of_stock', 'sold', 'hidden']
+    if ((valid as string[]).includes(filterParam)) {
+      setFilter(filterParam as ProductStatus | 'all')
+    }
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        next.delete('filter')
+        return next
+      },
+      { replace: true },
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Deep-link support: an order's item list links here as /dashboard/products?open=<id>
   // so a seller can jump straight from "what did they order" to that product's editor.
   // Runs once products have loaded so the lookup can actually find the product; clears the
