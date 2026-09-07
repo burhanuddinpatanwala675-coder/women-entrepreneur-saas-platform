@@ -1,4 +1,4 @@
-import type { OrderItem } from './types'
+import type { OrderItem, OrderStatus } from './types'
 
 /**
  * Normalizes a phone number into the digits-only, full-country-code format wa.me links
@@ -58,4 +58,40 @@ export function buildWhatsappOrderLink(
 
   const number = toWhatsappDigits(sellerWhatsappNumber)
   return `https://wa.me/${number}?text=${encodeURIComponent(message)}`
+}
+
+/**
+ * One customer-facing line per order status, used to pre-fill the "notify the customer"
+ * WhatsApp message a seller sends when moving an order forward. There's no WhatsApp
+ * Business API here (that needs a verified, billing-enabled Meta account — off the table
+ * for this card-free build), so this can't send itself silently: it just gives the seller
+ * a ready-to-go message so telling the customer is one tap instead of typing it out fresh
+ * every time. `cancelled` isn't in the forward FLOW that triggers this, but is included so
+ * a cancellation can use the same helper if that's ever wired up too.
+ */
+const STATUS_MESSAGES: Partial<Record<OrderStatus, (orderNumber: string, businessName?: string | null) => string>> = {
+  confirmed: (orderNumber) => `Hi! Your order ${orderNumber} has been confirmed and we'll start preparing it soon. 🎉`,
+  preparing: (orderNumber) => `Hi! Your order ${orderNumber} is being prepared right now.`,
+  ready: (orderNumber) => `Hi! Your order ${orderNumber} is ready! We'll let you know once it's on its way.`,
+  dispatched: (orderNumber) => `Hi! Your order ${orderNumber} is on its way to you now. 🚚`,
+  delivered: (orderNumber, businessName) =>
+    `Hi! Your order ${orderNumber} has been delivered. Thank you for shopping with ${businessName ?? 'us'}! 💕`,
+  cancelled: (orderNumber) => `Hi, your order ${orderNumber} has been cancelled. Please reach out if you have any questions.`,
+}
+
+/**
+ * Builds a wa.me link pre-filled with a status-update message for the customer, or null
+ * when there's no phone to message or no canned message for that status.
+ */
+export function buildWhatsappStatusUpdateLink(
+  customerPhone: string | null | undefined,
+  orderNumber: string,
+  status: OrderStatus,
+  businessName?: string | null,
+): string | null {
+  if (!customerPhone) return null
+  const build = STATUS_MESSAGES[status]
+  if (!build) return null
+  const number = toWhatsappDigits(customerPhone)
+  return `https://wa.me/${number}?text=${encodeURIComponent(build(orderNumber, businessName))}`
 }

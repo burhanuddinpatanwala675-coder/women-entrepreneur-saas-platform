@@ -4,7 +4,7 @@ import { doc, getDoc, onSnapshot, serverTimestamp, updateDoc } from 'firebase/fi
 import { db } from '@/firebase/client'
 import { getFirebaseErrorMessage } from '@/firebase/errors'
 import type { CustomerDoc, OrderDoc, OrderStatus } from '@/firebase/types'
-import { toWhatsappDigits } from '@/firebase/whatsapp'
+import { buildWhatsappStatusUpdateLink, toWhatsappDigits } from '@/firebase/whatsapp'
 import { Badge, Banner, Button, Card } from '@/components/ui'
 
 type Order = OrderDoc & { id: string }
@@ -16,6 +16,7 @@ export default function OrderDetailPage() {
   const navigate = useNavigate()
   const [order, setOrder] = useState<Order | null>(null)
   const [customer, setCustomer] = useState<CustomerDoc | null>(null)
+  const [businessName, setBusinessName] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [updating, setUpdating] = useState(false)
 
@@ -34,8 +35,26 @@ export default function OrderDetailPage() {
     })
   }, [order?.customerId])
 
+  useEffect(() => {
+    if (!order?.businessId) return
+    getDoc(doc(db, 'businesses', order.businessId)).then((snap) => {
+      if (snap.exists()) setBusinessName((snap.data() as { name?: string }).name ?? null)
+    })
+  }, [order?.businessId])
+
   async function setStatus(status: OrderStatus) {
     if (!order) return
+
+    // Open the WhatsApp "let the customer know" message BEFORE the await below — a new tab
+    // opened after an await is no longer considered a direct result of the click, so most
+    // browsers silently block it as a popup. Opening it first, synchronously inside this
+    // click handler, keeps it from being blocked. There's no WhatsApp Business API wired up
+    // here (that needs a paid, verified Meta account, which is off the table for this
+    // card-free build), so this can't send itself — it opens the chat with the message
+    // already typed so the seller just has to hit send.
+    const statusLink = buildWhatsappStatusUpdateLink(customer?.phone, order.orderNumber, status, businessName)
+    if (statusLink) window.open(statusLink, '_blank', 'noopener,noreferrer')
+
     setUpdating(true)
     setError(null)
     try {
