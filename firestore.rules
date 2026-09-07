@@ -156,15 +156,14 @@ service cloud.firestore {
         request.resource.data.slug == slug &&
         myBusinessId() == null; // one business per seller, enforced here too
 
-      // status/plan/trialEndsAt are superadmin territory (see AdminDashboard.tsx's Companies
+      // status/trialEndsAt are superadmin territory (see AdminDashboard.tsx's Companies
       // panel) — without this, the same isOwnerOrAdmin() rule that lets a seller edit their
       // own store's name/logo/etc would just as happily let them reactivate themselves after
-      // a suspension, or grant themselves a paid plan, straight from devtools. An admin can
-      // still change anything (including these fields); a plain owner can change anything
-      // EXCEPT these three.
+      // a suspension, straight from devtools. An admin can still change anything (including
+      // these fields); a plain owner can change anything EXCEPT these two.
       allow update: if request.resource.data.ownerUserId == resource.data.ownerUserId && ( // ownership can never change
         isAdmin() ||
-        (ownsBusiness(slug) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(["status", "plan", "trialEndsAt"]))
+        (ownsBusiness(slug) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(["status", "trialEndsAt"]))
       );
 
       allow delete: if false;
@@ -356,9 +355,9 @@ service cloud.firestore {
     // config/{id} — small public docs. Most (e.g. config/ai) are deploy-time managed, but
     // config/platform is the superadmin's System Settings tab (AdminDashboard.tsx): a
     // platform-wide announcement banner shown on every storefront (on top of each seller's
-    // own storeSettings.announcementBanner), plus planPricing (Rs./month for the Starter and
-    // Business plans, used to compute MRR on the Revenue tab). Public read (storefronts need
-    // the banner, signed out); write restricted to platform_admin.
+    // own storeSettings.announcementBanner), plus monthlyPrice (flat Rs./month HerCommerce
+    // charges every active business, used to compute MRR on the Revenue tab). Public read
+    // (storefronts need the banner, signed out); write restricted to platform_admin.
     // ================================================================================
     match /config/{docId} {
       allow read: if true;

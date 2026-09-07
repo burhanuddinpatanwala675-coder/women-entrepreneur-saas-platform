@@ -215,8 +215,7 @@ async function createBusinessWithUniqueSlug(
           // Every new business starts on a real 14-day free trial — tracked here so the
           // superadmin panel (AdminDashboard.tsx) has something meaningful to show/extend.
           // Not enforced anywhere: nothing blocks the store once this date passes, it's
-          // just the superadmin's signal for who to follow up with.
-          plan: 'free_trial',
+          // just the superadmin's signal for who's still on trial vs. who should be paying.
           trialEndsAt: Timestamp.fromMillis(Date.now() + 14 * 24 * 60 * 60 * 1000),
           onboardingStep: 2,
           storeSettings: DEFAULT_STORE_SETTINGS,

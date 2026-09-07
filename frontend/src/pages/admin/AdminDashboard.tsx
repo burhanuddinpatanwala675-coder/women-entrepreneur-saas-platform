@@ -20,7 +20,7 @@ import {
 import { db } from '@/firebase/client'
 import { slugify } from '@/firebase/slugify'
 import { getFirebaseErrorMessage } from '@/firebase/errors'
-import type { BusinessDoc, BusinessPlan, BusinessStatus, CategoryDoc, OrderDoc, ProductDoc, UserDoc } from '@/firebase/types'
+import type { BusinessDoc, BusinessStatus, CategoryDoc, OrderDoc, ProductDoc, UserDoc } from '@/firebase/types'
 import { useAuth } from '@/auth/AuthContext'
 import { Badge, Banner, Button, Card, Input, Label, StatCard, Textarea } from '@/components/ui'
 
@@ -150,7 +150,6 @@ interface AdminCompany {
   id: string
   name: string
   status: BusinessStatus
-  plan: BusinessPlan
   trialEndsAt: Timestamp | null
   createdAt: Timestamp | null
   ownerName: string
@@ -158,12 +157,6 @@ interface AdminCompany {
   ownerPhone: string | null
   productCount: number
   orderCount: number
-}
-
-const PLAN_LABELS: Record<BusinessPlan, string> = {
-  free_trial: 'Free Trial',
-  starter: 'Starter',
-  business: 'Business',
 }
 
 const STATUS_TONE: Record<BusinessStatus, 'green' | 'red' | 'amber' | 'gray'> = {
@@ -182,10 +175,10 @@ function formatDate(ts: Timestamp | null): string {
 /**
  * The superadmin's "Companies" panel — every business/tenant on the platform in one table,
  * with the controls a superadmin actually needs: suspend a store, permanently shelve one,
- * reactivate one, or nudge its trial window. There's no payment gateway or WhatsApp
- * Business API behind any of this (see BusinessPlan/trialEndsAt in firebase/types.ts) — the
- * plan/trial fields are manual record-keeping, and status is the one thing that's actually
- * enforced (StorefrontLayout.tsx and checkout.ts both block anything but 'active').
+ * reactivate one, or nudge its trial window. There's no payment gateway wired into this
+ * card-free build (see trialEndsAt in firebase/types.ts) — the trial field is informational
+ * record-keeping, and status is the one thing that's actually enforced (StorefrontLayout.tsx
+ * and checkout.ts both block anything but 'active').
  */
 function CompaniesTab() {
   const [companies, setCompanies] = useState<AdminCompany[]>([])
@@ -210,7 +203,6 @@ function CompaniesTab() {
             id: d.id,
             name: b.name,
             status: b.status,
-            plan: b.plan ?? 'free_trial', // older business docs predate this field
             trialEndsAt: b.trialEndsAt ?? null,
             createdAt: b.createdAt ?? null,
             ownerName: owner?.fullName ?? '—',
@@ -252,13 +244,6 @@ function CompaniesTab() {
     })
   }
 
-  function setPlan(company: AdminCompany, plan: BusinessPlan) {
-    runAction(company, async () => {
-      await updateDoc(doc(db, 'businesses', company.id), { plan, updatedAt: serverTimestamp() })
-      setCompanies((prev) => prev.map((x) => (x.id === company.id ? { ...x, plan } : x)))
-    })
-  }
-
   function extendTrial(company: AdminCompany) {
     runAction(company, async () => {
       // Extend from whichever is later — the current trial end date (if it's still ahead of
@@ -281,11 +266,10 @@ function CompaniesTab() {
         </div>
       )}
       <Card className="overflow-x-auto p-0">
-        <table className="w-full min-w-[860px] border-collapse text-sm">
+        <table className="w-full min-w-[760px] border-collapse text-sm">
           <thead>
             <tr className="border-b border-black/5 text-left text-xs font-semibold uppercase tracking-wide text-ink-500">
               <th className="px-4 py-3">Company</th>
-              <th className="px-4 py-3">Plan</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Trial ends</th>
               <th className="px-4 py-3">Created</th>
@@ -302,20 +286,6 @@ function CompaniesTab() {
                     <p className="text-xs text-ink-500">
                       {c.ownerName} · {c.ownerEmail || c.ownerPhone || '—'} · {c.productCount} products · {c.orderCount} orders
                     </p>
-                  </td>
-                  <td className="px-4 py-3.5 align-top">
-                    <select
-                      value={c.plan}
-                      disabled={busy}
-                      onChange={(e) => setPlan(c, e.target.value as BusinessPlan)}
-                      className="rounded-lg border border-ink-300 bg-white px-2 py-1.5 text-sm text-ink-900 focus:outline-none focus:ring-2 focus:ring-brand-400"
-                    >
-                      {(Object.keys(PLAN_LABELS) as BusinessPlan[]).map((p) => (
-                        <option key={p} value={p}>
-                          {PLAN_LABELS[p]}
-                        </option>
-                      ))}
-                    </select>
                   </td>
                   <td className="px-4 py-3.5 align-top">
                     <Badge tone={STATUS_TONE[c.status]}>{c.status}</Badge>
@@ -415,27 +385,23 @@ interface RevenueRow {
   gmv: number
 }
 
-type PaidPlan = 'starter' | 'business'
-
-/** Rs./month HerCommerce charges for each paid plan — set from the System Settings tab
- *  (config/platform.planPricing). Defaults to 0 until an admin fills them in, so MRR starts
- *  at Rs. 0 rather than guessing a number nobody entered. */
-interface PlanPricing {
-  starter: number
-  business: number
-}
-const DEFAULT_PLAN_PRICING: PlanPricing = { starter: 0, business: 0 }
-
-async function loadPlanPricing(): Promise<PlanPricing> {
+/** Flat Rs./month HerCommerce charges every active business — set from the System Settings
+ *  tab (config/platform.monthlyPrice). Defaults to 0 until an admin fills it in, so MRR
+ *  starts at Rs. 0 rather than guessing a number nobody entered. There's no per-tier pricing
+ *  here: every active account is charged the same amount (see BusinessStatus in
+ *  firebase/types.ts — there's no plan/tier field on a business at all). */
+async function loadMonthlyPrice(): Promise<number> {
   const snap = await getDoc(doc(db, 'config', 'platform'))
-  if (!snap.exists()) return DEFAULT_PLAN_PRICING
-  const p = snap.data().planPricing as Partial<PlanPricing> | undefined
-  return { starter: p?.starter ?? 0, business: p?.business ?? 0 }
+  if (!snap.exists()) return 0
+  return (snap.data().monthlyPrice as number | undefined) ?? 0
 }
 
 interface MrrData {
-  pricing: PlanPricing
-  accountsByPlan: Record<PaidPlan, number>
+  monthlyPrice: number
+  // "Paying" = active AND its free trial has already ended — a business still inside its
+  // 14-day trial window isn't being charged yet, even though its status is already 'active'.
+  payingAccounts: number
+  trialingAccounts: number
   mrr: number
 }
 
@@ -493,18 +459,21 @@ function RevenueTab() {
   // MRR doesn't depend on the GMV date range above — it's a snapshot of who's paying for
   // what *right now*, not a historical figure — so it loads independently, once.
   useEffect(() => {
-    Promise.all([loadPlanPricing(), getDocs(collection(db, 'businesses'))])
-      .then(([pricing, businessesSnap]) => {
-        // Only 'active' businesses count as paying — a suspended/archived one isn't billed,
-        // same logic the Companies tab uses to decide who's actually live.
-        const accountsByPlan: Record<PaidPlan, number> = { starter: 0, business: 0 }
+    const now = Date.now()
+    Promise.all([loadMonthlyPrice(), getDocs(collection(db, 'businesses'))])
+      .then(([monthlyPrice, businessesSnap]) => {
+        // Only 'active' businesses count at all — a suspended/archived one isn't billed,
+        // same logic the Companies tab uses to decide who's actually live. Of those, split
+        // into paying (trial already over, or no trial ever tracked) vs. still trialing.
+        let payingAccounts = 0
+        let trialingAccounts = 0
         businessesSnap.docs.forEach((d) => {
           const b = d.data() as BusinessDoc
           if (b.status !== 'active') return
-          if (b.plan === 'starter' || b.plan === 'business') accountsByPlan[b.plan] += 1
+          if (b.trialEndsAt && b.trialEndsAt.toMillis() > now) trialingAccounts += 1
+          else payingAccounts += 1
         })
-        const mrr = accountsByPlan.starter * pricing.starter + accountsByPlan.business * pricing.business
-        setMrrData({ pricing, accountsByPlan, mrr })
+        setMrrData({ monthlyPrice, payingAccounts, trialingAccounts, mrr: payingAccounts * monthlyPrice })
       })
       .catch((err) => setMrrError(getFirebaseErrorMessage(err)))
   }, [])
@@ -513,8 +482,6 @@ function RevenueTab() {
   const totalOrders = rows?.reduce((sum, r) => sum + r.orderCount, 0) ?? 0
   const aov = totalOrders > 0 ? totalGmv / totalOrders : 0
 
-  const pricingNotSet = mrrData?.pricing.starter === 0 && mrrData?.pricing.business === 0
-
   return (
     <div>
       <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-500">
@@ -522,7 +489,7 @@ function RevenueTab() {
       </h2>
       <p className="mb-4 text-xs text-ink-500">
         No payment gateway is wired into this app, so nothing here confirms a payment was actually received — this
-        multiplies the number of active accounts on each paid plan by the price you set for it in System Settings.
+        multiplies the number of active, past-trial accounts by the flat monthly price you set in System Settings.
       </p>
       {mrrError && (
         <div className="mb-4">
@@ -533,30 +500,17 @@ function RevenueTab() {
         <p className="mb-8 text-ink-500">Loading…</p>
       ) : (
         <div className="mb-8">
-          <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
             <StatCard label="MRR" value={`Rs. ${mrrData.mrr.toLocaleString()}`} />
             <StatCard label="ARR (MRR × 12)" value={`Rs. ${(mrrData.mrr * 12).toLocaleString()}`} />
-            <StatCard label="Paying accounts" value={mrrData.accountsByPlan.starter + mrrData.accountsByPlan.business} />
+            <StatCard label="Paying accounts" value={mrrData.payingAccounts} />
+            <StatCard label="Still on free trial" value={mrrData.trialingAccounts} />
           </div>
-          {pricingNotSet ? (
+          {mrrData.monthlyPrice === 0 && (
             <p className="text-xs text-ink-500">
-              Starter and Business prices are both set to Rs. 0 right now — set your real monthly prices in the
-              System Settings tab and this will start reflecting actual MRR.
+              Your monthly price is set to Rs. 0 right now — set it in the System Settings tab and this will start
+              reflecting actual MRR.
             </p>
-          ) : (
-            <Card className="divide-y divide-black/5 p-0">
-              {(['starter', 'business'] as PaidPlan[]).map((p) => (
-                <div key={p} className="flex items-center justify-between px-4 py-2.5 text-sm">
-                  <span className="text-ink-700">
-                    {PLAN_LABELS[p]} · {mrrData.accountsByPlan[p]} account{mrrData.accountsByPlan[p] === 1 ? '' : 's'} × Rs.{' '}
-                    {mrrData.pricing[p].toLocaleString()}/mo
-                  </span>
-                  <span className="font-semibold text-ink-900">
-                    Rs. {(mrrData.accountsByPlan[p] * mrrData.pricing[p]).toLocaleString()}
-                  </span>
-                </div>
-              ))}
-            </Card>
           )}
         </div>
       )}
@@ -635,18 +589,16 @@ function RevenueTab() {
 interface SubscriptionRow {
   id: string
   name: string
-  plan: BusinessPlan
   trialEndsAt: Timestamp | null
   status: BusinessStatus
 }
 
 /**
- * Groups every business by its (manually assigned — see BusinessPlan) plan, and surfaces
- * trial end dates soonest-first so a superadmin knows who to follow up with. This is
- * deliberately just a different view of the same businesses/plan/trialEndsAt data the
- * Companies tab edits — there's no separate "subscriptions" system to manage here (see
- * firestore.rules' subscriptions/{businessId} comment: that collection is a write-once,
- * untouched-since-signup stub from before plans existed on the business doc itself).
+ * There's no plan/tier on a business (see BusinessStatus in firebase/types.ts — every active
+ * account is charged the same flat price, set in System Settings). What this tab shows
+ * instead: who's still inside their free trial vs. already past it and presumably paying,
+ * with trial end dates soonest-first so a superadmin knows who to follow up with. Same
+ * underlying data the Companies tab edits — just a different view of it.
  */
 function SubscriptionsTab() {
   const [rows, setRows] = useState<SubscriptionRow[] | null>(null)
@@ -662,7 +614,7 @@ function SubscriptionsTab() {
         setRows(
           snap.docs.map((d) => {
             const b = d.data() as BusinessDoc
-            return { id: d.id, name: b.name, plan: b.plan ?? 'free_trial', trialEndsAt: b.trialEndsAt ?? null, status: b.status }
+            return { id: d.id, name: b.name, trialEndsAt: b.trialEndsAt ?? null, status: b.status }
           }),
         )
       })
@@ -672,23 +624,23 @@ function SubscriptionsTab() {
   if (error) return <Banner tone="danger">{error}</Banner>
   if (!rows) return <p className="text-ink-500">Loading…</p>
 
-  const counts: Record<BusinessPlan, number> = { free_trial: 0, starter: 0, business: 0 }
-  rows.forEach((r) => {
-    counts[r.plan] += 1
-  })
+  const active = rows.filter((r) => r.status === 'active')
+  const trialing = active.filter((r) => r.trialEndsAt && r.trialEndsAt.toMillis() > now)
+  const paying = active.length - trialing.length
 
   const withTrialDate = rows.filter((r) => r.trialEndsAt).sort((a, b) => a.trialEndsAt!.toMillis() - b.trialEndsAt!.toMillis())
 
   return (
     <div>
       <p className="mb-4 text-xs text-ink-500">
-        No payment gateway is wired into HerCommerce — these plans are manual labels set from the Companies tab
-        for sellers who pay outside the app. This is just a grouped view of that same data.
+        No payment gateway is wired into HerCommerce, and there's no plan/tier on a business — every active account
+        is charged the same flat monthly price (set in System Settings). "Paying" below just means their free trial
+        has ended while they're still active.
       </p>
-      <div className="mb-6 grid grid-cols-3 gap-3">
-        {(Object.keys(PLAN_LABELS) as BusinessPlan[]).map((p) => (
-          <StatCard key={p} label={PLAN_LABELS[p]} value={counts[p]} />
-        ))}
+      <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <StatCard label="Paying (trial ended)" value={paying} />
+        <StatCard label="On free trial" value={trialing.length} />
+        <StatCard label="Total active" value={active.length} />
       </div>
 
       <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-500">Trial windows, soonest first</h2>
@@ -700,7 +652,7 @@ function SubscriptionsTab() {
             <div key={r.id} className="flex items-center justify-between px-4 py-3">
               <div>
                 <p className="font-medium text-ink-900">{r.name}</p>
-                <p className="text-xs text-ink-500">{PLAN_LABELS[r.plan]}</p>
+                <p className="text-xs text-ink-500">{r.status}</p>
               </div>
               <Badge tone={daysLeft < 0 ? 'red' : daysLeft <= 3 ? 'amber' : 'gray'}>
                 {daysLeft < 0 ? `Expired ${Math.abs(daysLeft)}d ago` : daysLeft === 0 ? 'Ends today' : `${daysLeft}d left`}
@@ -824,8 +776,7 @@ function PlatformHealthTab() {
  */
 function SystemSettingsTab() {
   const [banner, setBanner] = useState('')
-  const [starterPrice, setStarterPrice] = useState('0')
-  const [businessPrice, setBusinessPrice] = useState('0')
+  const [monthlyPrice, setMonthlyPrice] = useState('0')
   const [loading, setLoading] = useState(true)
   const [savingBanner, setSavingBanner] = useState(false)
   const [savingPricing, setSavingPricing] = useState(false)
@@ -839,9 +790,7 @@ function SystemSettingsTab() {
         if (!snap.exists()) return
         const data = snap.data()
         setBanner((data.announcementBanner as string | null) ?? '')
-        const pricing = data.planPricing as Partial<PlanPricing> | undefined
-        setStarterPrice(String(pricing?.starter ?? 0))
-        setBusinessPrice(String(pricing?.business ?? 0))
+        setMonthlyPrice(String((data.monthlyPrice as number | undefined) ?? 0))
       })
       .catch((err) => setError(getFirebaseErrorMessage(err)))
       .finally(() => setLoading(false))
@@ -866,11 +815,11 @@ function SystemSettingsTab() {
     setError(null)
     setPricingSaved(false)
     try {
-      const planPricing: PlanPricing = {
-        starter: Math.max(0, Number(starterPrice) || 0),
-        business: Math.max(0, Number(businessPrice) || 0),
-      }
-      await setDoc(doc(db, 'config', 'platform'), { planPricing, updatedAt: serverTimestamp() }, { merge: true })
+      await setDoc(
+        doc(db, 'config', 'platform'),
+        { monthlyPrice: Math.max(0, Number(monthlyPrice) || 0), updatedAt: serverTimestamp() },
+        { merge: true },
+      )
       setPricingSaved(true)
     } catch (err) {
       setError(getFirebaseErrorMessage(err))
@@ -891,35 +840,21 @@ function SystemSettingsTab() {
       <Card className="p-5">
         <h2 className="font-semibold text-ink-900">Subscription pricing</h2>
         <p className="mt-1 text-sm text-ink-500">
-          What you charge each paid plan per month, in Rs. Drives the "Subscription revenue" figures on the
-          Revenue tab (accounts on that plan × this price) — there's no payment gateway behind it, so this is
-          what should be collected, not a confirmation that it was.
+          The flat Rs./month HerCommerce charges every active business — one price for everyone, no plan tiers.
+          Drives the "Subscription revenue" figures on the Revenue tab (active, past-trial accounts × this price)
+          — there's no payment gateway behind it, so this is what should be collected, not a confirmation it was.
         </p>
-        <div className="mt-4 grid grid-cols-2 gap-3">
-          <div>
-            <Label>Starter (Rs./mo)</Label>
-            <Input
-              type="number"
-              min={0}
-              value={starterPrice}
-              onChange={(e) => {
-                setStarterPrice(e.target.value)
-                setPricingSaved(false)
-              }}
-            />
-          </div>
-          <div>
-            <Label>Business (Rs./mo)</Label>
-            <Input
-              type="number"
-              min={0}
-              value={businessPrice}
-              onChange={(e) => {
-                setBusinessPrice(e.target.value)
-                setPricingSaved(false)
-              }}
-            />
-          </div>
+        <div className="mt-4 max-w-[200px]">
+          <Label>Rs./month</Label>
+          <Input
+            type="number"
+            min={0}
+            value={monthlyPrice}
+            onChange={(e) => {
+              setMonthlyPrice(e.target.value)
+              setPricingSaved(false)
+            }}
+          />
         </div>
         <div className="mt-4 flex items-center gap-3">
           <Button loading={savingPricing} onClick={savePricing}>
