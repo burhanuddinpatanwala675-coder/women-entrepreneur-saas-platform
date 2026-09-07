@@ -354,10 +354,11 @@ service cloud.firestore {
 
     // ================================================================================
     // config/{id} — small public docs. Most (e.g. config/ai) are deploy-time managed, but
-    // config/platform is the superadmin's System Settings tab (AdminDashboard.tsx) — a
-    // platform-wide announcement banner shown on every storefront, on top of each seller's
-    // own storeSettings.announcementBanner. Public read (storefronts need it, signed out);
-    // write restricted to platform_admin.
+    // config/platform is the superadmin's System Settings tab (AdminDashboard.tsx): a
+    // platform-wide announcement banner shown on every storefront (on top of each seller's
+    // own storeSettings.announcementBanner), plus planPricing (Rs./month for the Starter and
+    // Business plans, used to compute MRR on the Revenue tab). Public read (storefronts need
+    // the banner, signed out); write restricted to platform_admin.
     // ================================================================================
     match /config/{docId} {
       allow read: if true;

@@ -22,7 +22,7 @@ import { slugify } from '@/firebase/slugify'
 import { getFirebaseErrorMessage } from '@/firebase/errors'
 import type { BusinessDoc, BusinessPlan, BusinessStatus, CategoryDoc, OrderDoc, ProductDoc, UserDoc } from '@/firebase/types'
 import { useAuth } from '@/auth/AuthContext'
-import { Badge, Banner, Button, Card, Input, StatCard, Textarea } from '@/components/ui'
+import { Badge, Banner, Button, Card, Input, Label, StatCard, Textarea } from '@/components/ui'
 
 type Tab = { key: 'overview' | 'companies' | 'revenue' | 'subscriptions' | 'health' | 'settings' | 'categories'; label: string }
 const TABS: Tab[] = [
@@ -415,16 +415,44 @@ interface RevenueRow {
   gmv: number
 }
 
+type PaidPlan = 'starter' | 'business'
+
+/** Rs./month HerCommerce charges for each paid plan — set from the System Settings tab
+ *  (config/platform.planPricing). Defaults to 0 until an admin fills them in, so MRR starts
+ *  at Rs. 0 rather than guessing a number nobody entered. */
+interface PlanPricing {
+  starter: number
+  business: number
+}
+const DEFAULT_PLAN_PRICING: PlanPricing = { starter: 0, business: 0 }
+
+async function loadPlanPricing(): Promise<PlanPricing> {
+  const snap = await getDoc(doc(db, 'config', 'platform'))
+  if (!snap.exists()) return DEFAULT_PLAN_PRICING
+  const p = snap.data().planPricing as Partial<PlanPricing> | undefined
+  return { starter: p?.starter ?? 0, business: p?.business ?? 0 }
+}
+
+interface MrrData {
+  pricing: PlanPricing
+  accountsByPlan: Record<PaidPlan, number>
+  mrr: number
+}
+
 /**
- * "Revenue" here means gross merchandise value (the sum of every store's order totals) —
- * HerCommerce doesn't take a cut of sales, so there's no separate platform take-rate to
- * show. This is the one real, spendable-feeling number a superadmin can watch: how much is
- * actually moving through the platform, and which stores are driving it.
+ * Two different kinds of "money" on one tab, deliberately kept apart: gross merchandise
+ * value (what customers pay sellers through their storefronts — HerCommerce never touches
+ * this) versus subscription revenue (what sellers pay HerCommerce itself to use the
+ * platform). The MRR figure below is what HerCommerce actually earns — GMV is what moves
+ * through it.
  */
 function RevenueTab() {
   const [range, setRange] = useState<Range>('month')
   const [rows, setRows] = useState<RevenueRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  const [mrrData, setMrrData] = useState<MrrData | null>(null)
+  const [mrrError, setMrrError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -462,12 +490,77 @@ function RevenueTab() {
     }
   }, [range])
 
+  // MRR doesn't depend on the GMV date range above — it's a snapshot of who's paying for
+  // what *right now*, not a historical figure — so it loads independently, once.
+  useEffect(() => {
+    Promise.all([loadPlanPricing(), getDocs(collection(db, 'businesses'))])
+      .then(([pricing, businessesSnap]) => {
+        // Only 'active' businesses count as paying — a suspended/archived one isn't billed,
+        // same logic the Companies tab uses to decide who's actually live.
+        const accountsByPlan: Record<PaidPlan, number> = { starter: 0, business: 0 }
+        businessesSnap.docs.forEach((d) => {
+          const b = d.data() as BusinessDoc
+          if (b.status !== 'active') return
+          if (b.plan === 'starter' || b.plan === 'business') accountsByPlan[b.plan] += 1
+        })
+        const mrr = accountsByPlan.starter * pricing.starter + accountsByPlan.business * pricing.business
+        setMrrData({ pricing, accountsByPlan, mrr })
+      })
+      .catch((err) => setMrrError(getFirebaseErrorMessage(err)))
+  }, [])
+
   const totalGmv = rows?.reduce((sum, r) => sum + r.gmv, 0) ?? 0
   const totalOrders = rows?.reduce((sum, r) => sum + r.orderCount, 0) ?? 0
   const aov = totalOrders > 0 ? totalGmv / totalOrders : 0
 
+  const pricingNotSet = mrrData?.pricing.starter === 0 && mrrData?.pricing.business === 0
+
   return (
     <div>
+      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-500">
+        Subscription revenue — what HerCommerce earns
+      </h2>
+      <p className="mb-4 text-xs text-ink-500">
+        No payment gateway is wired into this app, so nothing here confirms a payment was actually received — this
+        multiplies the number of active accounts on each paid plan by the price you set for it in System Settings.
+      </p>
+      {mrrError && (
+        <div className="mb-4">
+          <Banner tone="danger">{mrrError}</Banner>
+        </div>
+      )}
+      {mrrData === null ? (
+        <p className="mb-8 text-ink-500">Loading…</p>
+      ) : (
+        <div className="mb-8">
+          <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <StatCard label="MRR" value={`Rs. ${mrrData.mrr.toLocaleString()}`} />
+            <StatCard label="ARR (MRR × 12)" value={`Rs. ${(mrrData.mrr * 12).toLocaleString()}`} />
+            <StatCard label="Paying accounts" value={mrrData.accountsByPlan.starter + mrrData.accountsByPlan.business} />
+          </div>
+          {pricingNotSet ? (
+            <p className="text-xs text-ink-500">
+              Starter and Business prices are both set to Rs. 0 right now — set your real monthly prices in the
+              System Settings tab and this will start reflecting actual MRR.
+            </p>
+          ) : (
+            <Card className="divide-y divide-black/5 p-0">
+              {(['starter', 'business'] as PaidPlan[]).map((p) => (
+                <div key={p} className="flex items-center justify-between px-4 py-2.5 text-sm">
+                  <span className="text-ink-700">
+                    {PLAN_LABELS[p]} · {mrrData.accountsByPlan[p]} account{mrrData.accountsByPlan[p] === 1 ? '' : 's'} × Rs.{' '}
+                    {mrrData.pricing[p].toLocaleString()}/mo
+                  </span>
+                  <span className="font-semibold text-ink-900">
+                    Rs. {(mrrData.accountsByPlan[p] * mrrData.pricing[p]).toLocaleString()}
+                  </span>
+                </div>
+              ))}
+            </Card>
+          )}
+        </div>
+      )}
+
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-500">Gross merchandise value</h2>
         <div className="flex gap-1.5 overflow-x-auto pb-0.5">
@@ -486,8 +579,8 @@ function RevenueTab() {
       </div>
 
       <p className="mb-4 text-xs text-ink-500">
-        HerCommerce doesn't take a cut of sales, so this is gross merchandise value across every store's orders,
-        not platform revenue in the "money HerCommerce earns" sense.
+        This is gross merchandise value across every store's orders — what customers pay sellers, not money
+        HerCommerce earns. See the subscription revenue figure above for that.
       </p>
 
       {error && (
@@ -731,41 +824,111 @@ function PlatformHealthTab() {
  */
 function SystemSettingsTab() {
   const [banner, setBanner] = useState('')
+  const [starterPrice, setStarterPrice] = useState('0')
+  const [businessPrice, setBusinessPrice] = useState('0')
   const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
+  const [savingBanner, setSavingBanner] = useState(false)
+  const [savingPricing, setSavingPricing] = useState(false)
+  const [bannerSaved, setBannerSaved] = useState(false)
+  const [pricingSaved, setPricingSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     getDoc(doc(db, 'config', 'platform'))
-      .then((snap) => setBanner(snap.exists() ? ((snap.data().announcementBanner as string | null) ?? '') : ''))
+      .then((snap) => {
+        if (!snap.exists()) return
+        const data = snap.data()
+        setBanner((data.announcementBanner as string | null) ?? '')
+        const pricing = data.planPricing as Partial<PlanPricing> | undefined
+        setStarterPrice(String(pricing?.starter ?? 0))
+        setBusinessPrice(String(pricing?.business ?? 0))
+      })
       .catch((err) => setError(getFirebaseErrorMessage(err)))
       .finally(() => setLoading(false))
   }, [])
 
-  async function save() {
-    setSaving(true)
+  async function saveBanner() {
+    setSavingBanner(true)
     setError(null)
-    setSaved(false)
+    setBannerSaved(false)
     try {
       await setDoc(doc(db, 'config', 'platform'), { announcementBanner: banner.trim() || null, updatedAt: serverTimestamp() }, { merge: true })
-      setSaved(true)
+      setBannerSaved(true)
     } catch (err) {
       setError(getFirebaseErrorMessage(err))
     } finally {
-      setSaving(false)
+      setSavingBanner(false)
+    }
+  }
+
+  async function savePricing() {
+    setSavingPricing(true)
+    setError(null)
+    setPricingSaved(false)
+    try {
+      const planPricing: PlanPricing = {
+        starter: Math.max(0, Number(starterPrice) || 0),
+        business: Math.max(0, Number(businessPrice) || 0),
+      }
+      await setDoc(doc(db, 'config', 'platform'), { planPricing, updatedAt: serverTimestamp() }, { merge: true })
+      setPricingSaved(true)
+    } catch (err) {
+      setError(getFirebaseErrorMessage(err))
+    } finally {
+      setSavingPricing(false)
     }
   }
 
   if (loading) return <p className="text-ink-500">Loading…</p>
 
   return (
-    <div className="max-w-xl">
+    <div className="max-w-xl space-y-4">
       {error && (
-        <div className="mb-4">
+        <div>
           <Banner tone="danger">{error}</Banner>
         </div>
       )}
+      <Card className="p-5">
+        <h2 className="font-semibold text-ink-900">Subscription pricing</h2>
+        <p className="mt-1 text-sm text-ink-500">
+          What you charge each paid plan per month, in Rs. Drives the "Subscription revenue" figures on the
+          Revenue tab (accounts on that plan × this price) — there's no payment gateway behind it, so this is
+          what should be collected, not a confirmation that it was.
+        </p>
+        <div className="mt-4 grid grid-cols-2 gap-3">
+          <div>
+            <Label>Starter (Rs./mo)</Label>
+            <Input
+              type="number"
+              min={0}
+              value={starterPrice}
+              onChange={(e) => {
+                setStarterPrice(e.target.value)
+                setPricingSaved(false)
+              }}
+            />
+          </div>
+          <div>
+            <Label>Business (Rs./mo)</Label>
+            <Input
+              type="number"
+              min={0}
+              value={businessPrice}
+              onChange={(e) => {
+                setBusinessPrice(e.target.value)
+                setPricingSaved(false)
+              }}
+            />
+          </div>
+        </div>
+        <div className="mt-4 flex items-center gap-3">
+          <Button loading={savingPricing} onClick={savePricing}>
+            Save pricing
+          </Button>
+          {pricingSaved && <span className="text-sm text-green-600">Saved ✓</span>}
+        </div>
+      </Card>
+
       <Card className="p-5">
         <h2 className="font-semibold text-ink-900">Platform-wide announcement</h2>
         <p className="mt-1 text-sm text-ink-500">
@@ -778,15 +941,15 @@ function SystemSettingsTab() {
           value={banner}
           onChange={(e) => {
             setBanner(e.target.value)
-            setSaved(false)
+            setBannerSaved(false)
           }}
           placeholder="e.g. We're aware of WhatsApp delivery delays today and are looking into it."
         />
         <div className="mt-4 flex items-center gap-3">
-          <Button loading={saving} onClick={save}>
-            Save
+          <Button loading={savingBanner} onClick={saveBanner}>
+            Save announcement
           </Button>
-          {saved && <span className="text-sm text-green-600">Saved ✓</span>}
+          {bannerSaved && <span className="text-sm text-green-600">Saved ✓</span>}
         </div>
       </Card>
     </div>
