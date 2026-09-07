@@ -11,6 +11,7 @@ import {
   getDoc,
   getDocs,
   query,
+  serverTimestamp,
   sum,
   updateDoc,
   where,
@@ -18,16 +19,21 @@ import {
 import { db } from '@/firebase/client'
 import { slugify } from '@/firebase/slugify'
 import { getFirebaseErrorMessage } from '@/firebase/errors'
-import type { BusinessDoc, BusinessStatus, CategoryDoc, UserDoc } from '@/firebase/types'
+import type { BusinessDoc, BusinessPlan, BusinessStatus, CategoryDoc, UserDoc } from '@/firebase/types'
 import { useAuth } from '@/auth/AuthContext'
 import { Badge, Banner, Button, Card, Input, StatCard } from '@/components/ui'
 
-type Tab = 'overview' | 'sellers' | 'categories'
+type Tab = { key: 'overview' | 'companies' | 'categories'; label: string }
+const TABS: Tab[] = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'companies', label: 'Companies' },
+  { key: 'categories', label: 'Categories' },
+]
 
 export default function AdminDashboard() {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
-  const [tab, setTab] = useState<Tab>('overview')
+  const [tab, setTab] = useState<Tab['key']>('overview')
 
   return (
     <div className="min-h-screen bg-cream-50">
@@ -52,19 +58,19 @@ export default function AdminDashboard() {
 
       <div className="mx-auto max-w-6xl px-5 py-6">
         <div className="mb-6 flex gap-2">
-          {(['overview', 'sellers', 'categories'] as Tab[]).map((t) => (
+          {TABS.map((t) => (
             <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`rounded-full px-4 py-2 text-sm font-medium capitalize ${tab === t ? 'bg-brand-600 text-white' : 'bg-white text-ink-700'}`}
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={`rounded-full px-4 py-2 text-sm font-medium ${tab === t.key ? 'bg-brand-600 text-white' : 'bg-white text-ink-700'}`}
             >
-              {t}
+              {t.label}
             </button>
           ))}
         </div>
 
         {tab === 'overview' && <OverviewTab />}
-        {tab === 'sellers' && <SellersTab />}
+        {tab === 'companies' && <CompaniesTab />}
         {tab === 'categories' && <CategoriesTab />}
       </div>
     </div>
@@ -131,10 +137,13 @@ function OverviewTab() {
   )
 }
 
-interface AdminSeller {
+interface AdminCompany {
   id: string
   name: string
   status: BusinessStatus
+  plan: BusinessPlan
+  trialEndsAt: Timestamp | null
+  createdAt: Timestamp | null
   ownerName: string
   ownerEmail: string | null
   ownerPhone: string | null
@@ -142,9 +151,37 @@ interface AdminSeller {
   orderCount: number
 }
 
-function SellersTab() {
-  const [sellers, setSellers] = useState<AdminSeller[]>([])
+const PLAN_LABELS: Record<BusinessPlan, string> = {
+  free_trial: 'Free Trial',
+  starter: 'Starter',
+  business: 'Business',
+}
+
+const STATUS_TONE: Record<BusinessStatus, 'green' | 'red' | 'amber' | 'gray'> = {
+  active: 'green',
+  suspended: 'red',
+  archived: 'gray',
+  pending: 'amber',
+}
+
+const TRIAL_EXTENSION_DAYS = 14
+
+function formatDate(ts: Timestamp | null): string {
+  return ts ? ts.toDate().toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
+}
+
+/**
+ * The superadmin's "Companies" panel — every business/tenant on the platform in one table,
+ * with the controls a superadmin actually needs: suspend a store, permanently shelve one,
+ * reactivate one, or nudge its trial window. There's no payment gateway or WhatsApp
+ * Business API behind any of this (see BusinessPlan/trialEndsAt in firebase/types.ts) — the
+ * plan/trial fields are manual record-keeping, and status is the one thing that's actually
+ * enforced (StorefrontLayout.tsx and checkout.ts both block anything but 'active').
+ */
+function CompaniesTab() {
+  const [companies, setCompanies] = useState<AdminCompany[]>([])
   const [loading, setLoading] = useState(true)
+  const [busyId, setBusyId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   async function load() {
@@ -164,6 +201,9 @@ function SellersTab() {
             id: d.id,
             name: b.name,
             status: b.status,
+            plan: b.plan ?? 'free_trial', // older business docs predate this field
+            trialEndsAt: b.trialEndsAt ?? null,
+            createdAt: b.createdAt ?? null,
             ownerName: owner?.fullName ?? '—',
             ownerEmail: owner?.email ?? null,
             ownerPhone: owner?.phone ?? null,
@@ -172,7 +212,7 @@ function SellersTab() {
           }
         }),
       )
-      setSellers(rows)
+      setCompanies(rows)
     } catch (err) {
       setError(getFirebaseErrorMessage(err))
     } finally {
@@ -183,15 +223,43 @@ function SellersTab() {
     load()
   }, [])
 
-  async function toggleStatus(s: AdminSeller) {
-    const newStatus: BusinessStatus = s.status === 'suspended' ? 'active' : 'suspended'
-    if (!confirm(`${newStatus === 'suspended' ? 'Suspend' : 'Reactivate'} "${s.name}"?`)) return
+  async function runAction(company: AdminCompany, action: () => Promise<void>) {
+    setBusyId(company.id)
+    setError(null)
     try {
-      await updateDoc(doc(db, 'businesses', s.id), { status: newStatus })
-      setSellers((prev) => prev.map((x) => (x.id === s.id ? { ...x, status: newStatus } : x)))
+      await action()
     } catch (err) {
       setError(getFirebaseErrorMessage(err))
+    } finally {
+      setBusyId(null)
     }
+  }
+
+  function setStatus(company: AdminCompany, status: BusinessStatus, confirmMessage: string) {
+    if (!confirm(confirmMessage)) return
+    runAction(company, async () => {
+      await updateDoc(doc(db, 'businesses', company.id), { status, updatedAt: serverTimestamp() })
+      setCompanies((prev) => prev.map((x) => (x.id === company.id ? { ...x, status } : x)))
+    })
+  }
+
+  function setPlan(company: AdminCompany, plan: BusinessPlan) {
+    runAction(company, async () => {
+      await updateDoc(doc(db, 'businesses', company.id), { plan, updatedAt: serverTimestamp() })
+      setCompanies((prev) => prev.map((x) => (x.id === company.id ? { ...x, plan } : x)))
+    })
+  }
+
+  function extendTrial(company: AdminCompany) {
+    runAction(company, async () => {
+      // Extend from whichever is later — the current trial end date (if it's still ahead of
+      // us) or right now. That way "+14 days" always adds 14 real days of runway instead of
+      // resetting an already-future date back closer to today.
+      const base = company.trialEndsAt && company.trialEndsAt.toMillis() > Date.now() ? company.trialEndsAt.toMillis() : Date.now()
+      const trialEndsAt = Timestamp.fromMillis(base + TRIAL_EXTENSION_DAYS * 24 * 60 * 60 * 1000)
+      await updateDoc(doc(db, 'businesses', company.id), { trialEndsAt, updatedAt: serverTimestamp() })
+      setCompanies((prev) => prev.map((x) => (x.id === company.id ? { ...x, trialEndsAt } : x)))
+    })
   }
 
   if (loading) return <p className="text-ink-500">Loading…</p>
@@ -203,23 +271,89 @@ function SellersTab() {
           <Banner tone="danger">{error}</Banner>
         </div>
       )}
-      <Card className="divide-y divide-black/5">
-        {sellers.map((s) => (
-          <div key={s.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5">
-            <div>
-              <p className="font-semibold text-ink-900">{s.name}</p>
-              <p className="text-xs text-ink-500">
-                {s.ownerName} · {s.ownerEmail || s.ownerPhone} · {s.productCount} products · {s.orderCount} orders
-              </p>
-            </div>
-            <div className="flex items-center gap-3">
-              <Badge tone={s.status === 'active' ? 'green' : s.status === 'suspended' ? 'red' : 'amber'}>{s.status}</Badge>
-              <Button size="sm" variant={s.status === 'suspended' ? 'primary' : 'danger'} onClick={() => toggleStatus(s)}>
-                {s.status === 'suspended' ? 'Reactivate' : 'Suspend'}
-              </Button>
-            </div>
-          </div>
-        ))}
+      <Card className="overflow-x-auto p-0">
+        <table className="w-full min-w-[860px] border-collapse text-sm">
+          <thead>
+            <tr className="border-b border-black/5 text-left text-xs font-semibold uppercase tracking-wide text-ink-500">
+              <th className="px-4 py-3">Company</th>
+              <th className="px-4 py-3">Plan</th>
+              <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3">Trial ends</th>
+              <th className="px-4 py-3">Created</th>
+              <th className="px-4 py-3">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-black/5">
+            {companies.map((c) => {
+              const busy = busyId === c.id
+              return (
+                <tr key={c.id}>
+                  <td className="px-4 py-3.5 align-top">
+                    <p className="font-semibold text-ink-900">{c.name}</p>
+                    <p className="text-xs text-ink-500">
+                      {c.ownerName} · {c.ownerEmail || c.ownerPhone || '—'} · {c.productCount} products · {c.orderCount} orders
+                    </p>
+                  </td>
+                  <td className="px-4 py-3.5 align-top">
+                    <select
+                      value={c.plan}
+                      disabled={busy}
+                      onChange={(e) => setPlan(c, e.target.value as BusinessPlan)}
+                      className="rounded-lg border border-ink-300 bg-white px-2 py-1.5 text-sm text-ink-900 focus:outline-none focus:ring-2 focus:ring-brand-400"
+                    >
+                      {(Object.keys(PLAN_LABELS) as BusinessPlan[]).map((p) => (
+                        <option key={p} value={p}>
+                          {PLAN_LABELS[p]}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="px-4 py-3.5 align-top">
+                    <Badge tone={STATUS_TONE[c.status]}>{c.status}</Badge>
+                  </td>
+                  <td className="px-4 py-3.5 align-top text-ink-700">{formatDate(c.trialEndsAt)}</td>
+                  <td className="px-4 py-3.5 align-top text-ink-700">{formatDate(c.createdAt)}</td>
+                  <td className="px-4 py-3.5 align-top">
+                    <div className="flex flex-wrap gap-2">
+                      {c.status !== 'active' && (
+                        <Button
+                          size="sm"
+                          loading={busy}
+                          onClick={() => setStatus(c, 'active', `Activate "${c.name}"? Its storefront will accept orders again.`)}
+                        >
+                          Activate
+                        </Button>
+                      )}
+                      {c.status !== 'suspended' && (
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          loading={busy}
+                          onClick={() => setStatus(c, 'suspended', `Suspend "${c.name}"? Its storefront will stop accepting orders until reactivated.`)}
+                        >
+                          Suspend
+                        </Button>
+                      )}
+                      {c.status !== 'archived' && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          loading={busy}
+                          onClick={() => setStatus(c, 'archived', `Archive "${c.name}"? This is meant for closed/churned sellers — reversible with Activate, but treat it as permanent.`)}
+                        >
+                          Archive
+                        </Button>
+                      )}
+                      <Button size="sm" variant="outline" loading={busy} onClick={() => extendTrial(c)}>
+                        +{TRIAL_EXTENSION_DAYS}d Trial
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
       </Card>
     </div>
   )

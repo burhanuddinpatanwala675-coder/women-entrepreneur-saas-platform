@@ -32,7 +32,16 @@ export interface AppUser {
 }
 
 export type BusinessTemplate = 'fashion' | 'beauty' | 'food' | 'handmade' | 'minimal'
-export type BusinessStatus = 'active' | 'suspended' | 'pending'
+/** 'archived' is a superadmin-only, longer-term shelving of a business (e.g. the seller
+ *  churned) — distinct from 'suspended', which is meant as a short-term, easily-reversed
+ *  block (e.g. a payment issue). Both behave identically to the storefront and checkout
+ *  today (see StorefrontLayout.tsx and checkout.ts — anything but 'active' is blocked). */
+export type BusinessStatus = 'active' | 'suspended' | 'pending' | 'archived'
+
+/** Manually assigned by a superadmin — there's no payment gateway wired into this card-free
+ *  build (see ARCHITECTURE.md section 3), so a paid plan here is a record-keeping label for
+ *  a seller who pays outside the app (bank transfer, invoice, etc.), not an enforced tier. */
+export type BusinessPlan = 'free_trial' | 'starter' | 'business'
 
 export interface StoreSettings {
   accentColor: string
@@ -61,6 +70,14 @@ export interface BusinessDoc {
   socialLinks: Record<string, string>
   template: BusinessTemplate
   status: BusinessStatus
+  /** Superadmin-managed billing label — see BusinessPlan. Older business docs created
+   *  before this field existed won't have it: always read as `business.plan ?? 'free_trial'`. */
+  plan: BusinessPlan
+  /** End of the current free-trial/grace window, extendable by a superadmin. Older business
+   *  docs won't have it — read as `business.trialEndsAt ?? null` ("no trial tracked"). Not
+   *  enforced anywhere (no code blocks a business just because this date has passed) — it's
+   *  informational, for a superadmin deciding who to follow up with. */
+  trialEndsAt: Timestamp | null
   onboardingStep: number
   storeSettings: StoreSettings
   createdAt: Timestamp

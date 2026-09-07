@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
+  Timestamp,
   collection,
   doc,
   getDocs,
@@ -211,6 +212,12 @@ async function createBusinessWithUniqueSlug(
           socialLinks: {},
           template: 'minimal',
           status: 'active',
+          // Every new business starts on a real 14-day free trial — tracked here so the
+          // superadmin panel (AdminDashboard.tsx) has something meaningful to show/extend.
+          // Not enforced anywhere: nothing blocks the store once this date passes, it's
+          // just the superadmin's signal for who to follow up with.
+          plan: 'free_trial',
+          trialEndsAt: Timestamp.fromMillis(Date.now() + 14 * 24 * 60 * 60 * 1000),
           onboardingStep: 2,
           storeSettings: DEFAULT_STORE_SETTINGS,
           createdAt: now,

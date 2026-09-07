@@ -156,8 +156,16 @@ service cloud.firestore {
         request.resource.data.slug == slug &&
         myBusinessId() == null; // one business per seller, enforced here too
 
-      allow update: if isOwnerOrAdmin(slug) &&
-        request.resource.data.ownerUserId == resource.data.ownerUserId; // ownership can never change
+      // status/plan/trialEndsAt are superadmin territory (see AdminDashboard.tsx's Companies
+      // panel) — without this, the same isOwnerOrAdmin() rule that lets a seller edit their
+      // own store's name/logo/etc would just as happily let them reactivate themselves after
+      // a suspension, or grant themselves a paid plan, straight from devtools. An admin can
+      // still change anything (including these fields); a plain owner can change anything
+      // EXCEPT these three.
+      allow update: if request.resource.data.ownerUserId == resource.data.ownerUserId && ( // ownership can never change
+        isAdmin() ||
+        (ownsBusiness(slug) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(["status", "plan", "trialEndsAt"]))
+      );
 
       allow delete: if false;
     }
