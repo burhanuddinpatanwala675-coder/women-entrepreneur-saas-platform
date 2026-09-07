@@ -12,6 +12,16 @@ export default function StorefrontLayout() {
   const [business, setBusiness] = useState<StorefrontBusiness | null>(null)
   const [notFound, setNotFound] = useState(false)
   const [cartOpen, setCartOpen] = useState(false)
+  const [platformBanner, setPlatformBanner] = useState<string | null>(null)
+
+  // Superadmin-set announcement (AdminDashboard.tsx's System Settings tab), shown on every
+  // storefront regardless of business — e.g. a platform-wide incident notice. Best-effort:
+  // if this doc doesn't exist yet or the read fails, the storefront just renders without it.
+  useEffect(() => {
+    getDoc(doc(db, 'config', 'platform'))
+      .then((snap) => setPlatformBanner(snap.exists() ? ((snap.data().announcementBanner as string | null) ?? null) : null))
+      .catch(() => setPlatformBanner(null))
+  }, [])
 
   useEffect(() => {
     if (!slug) return
@@ -51,6 +61,10 @@ export default function StorefrontLayout() {
   return (
     <StorefrontContext.Provider value={{ business, slug }}>
       <div className="min-h-screen bg-cream-50" style={{ ['--accent' as string]: business.storeSettings.accentColor }}>
+        {platformBanner && (
+          <div className="bg-ink-900 px-4 py-2 text-center text-sm font-medium text-white">{platformBanner}</div>
+        )}
+
         {business.storeSettings.announcementBanner && (
           <div className="bg-brand-600 px-4 py-2 text-center text-sm font-medium text-white">
             {business.storeSettings.announcementBanner}
