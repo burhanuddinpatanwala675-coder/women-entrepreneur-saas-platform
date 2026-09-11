@@ -1,36 +1,23 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import {
-  Timestamp,
-  addDoc,
-  collection,
-  deleteDoc,
-  doc,
-  getAggregateFromServer,
-  getCountFromServer,
-  getDoc,
-  getDocs,
-  query,
-  serverTimestamp,
-  setDoc,
-  sum,
-  updateDoc,
-  where,
-} from 'firebase/firestore'
+import { Timestamp, addDoc, collection, deleteDoc, doc, getDoc, getDocs, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore'
 import { db } from '@/firebase/client'
 import { slugify } from '@/firebase/slugify'
 import { getFirebaseErrorMessage } from '@/firebase/errors'
-import type { BusinessDoc, BusinessStatus, CategoryDoc, OrderDoc, ProductDoc, UserDoc } from '@/firebase/types'
+import type { BusinessDoc, BusinessStatus, CategoryDoc, UserDoc } from '@/firebase/types'
 import { useAuth } from '@/auth/AuthContext'
 import { Badge, Banner, Button, Card, Input, Label, StatCard, Textarea } from '@/components/ui'
 
-type Tab = { key: 'overview' | 'companies' | 'revenue' | 'subscriptions' | 'health' | 'settings' | 'categories'; label: string }
+// Deliberately scoped to account management only — status, trial, subscription. No product,
+// order, or sales (GMV) data anywhere in this panel: that's each seller's own business data
+// about their own customers, not something a platform superadmin needs to see to run
+// account-level operations like suspending a store or setting its price.
+type Tab = { key: 'overview' | 'companies' | 'revenue' | 'subscriptions' | 'settings' | 'categories'; label: string }
 const TABS: Tab[] = [
   { key: 'overview', label: 'Overview' },
   { key: 'companies', label: 'Companies' },
   { key: 'revenue', label: 'Revenue' },
   { key: 'subscriptions', label: 'Subscriptions' },
-  { key: 'health', label: 'Platform Health' },
   { key: 'settings', label: 'System Settings' },
   { key: 'categories', label: 'Categories' },
 ]
@@ -78,7 +65,6 @@ export default function AdminDashboard() {
         {tab === 'companies' && <CompaniesTab />}
         {tab === 'revenue' && <RevenueTab />}
         {tab === 'subscriptions' && <SubscriptionsTab />}
-        {tab === 'health' && <PlatformHealthTab />}
         {tab === 'settings' && <SystemSettingsTab />}
         {tab === 'categories' && <CategoriesTab />}
       </div>
@@ -87,15 +73,10 @@ export default function AdminDashboard() {
 }
 
 interface Analytics {
-  total_sellers: number
-  active_sellers: number
-  suspended_sellers: number
-  total_products: number
-  total_orders: number
-  orders_last_30_days: number
-  total_customers: number
-  gmv_total: number
-  gmv_last_30_days: number
+  total: number
+  active: number
+  suspended: number
+  archived: number
 }
 
 function OverviewTab() {
@@ -103,28 +84,14 @@ function OverviewTab() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    const cutoff = Timestamp.fromMillis(Date.now() - 30 * 24 * 60 * 60 * 1000)
-    Promise.all([
-      getDocs(collection(db, 'businesses')),
-      getCountFromServer(collection(db, 'products')),
-      getCountFromServer(collection(db, 'orders')),
-      getCountFromServer(query(collection(db, 'orders'), where('createdAt', '>=', cutoff))),
-      getCountFromServer(collection(db, 'customers')),
-      getAggregateFromServer(collection(db, 'orders'), { gmv: sum('total') }),
-      getAggregateFromServer(query(collection(db, 'orders'), where('createdAt', '>=', cutoff)), { gmv: sum('total') }),
-    ])
-      .then(([businesses, products, orders, orders30, customers, gmv, gmv30]) => {
-        const statuses = businesses.docs.map((d) => (d.data() as BusinessDoc).status)
+    getDocs(collection(db, 'businesses'))
+      .then((snap) => {
+        const statuses = snap.docs.map((d) => (d.data() as BusinessDoc).status)
         setData({
-          total_sellers: statuses.length,
-          active_sellers: statuses.filter((s) => s === 'active').length,
-          suspended_sellers: statuses.filter((s) => s === 'suspended').length,
-          total_products: products.data().count,
-          total_orders: orders.data().count,
-          orders_last_30_days: orders30.data().count,
-          total_customers: customers.data().count,
-          gmv_total: gmv.data().gmv ?? 0,
-          gmv_last_30_days: gmv30.data().gmv ?? 0,
+          total: statuses.length,
+          active: statuses.filter((s) => s === 'active').length,
+          suspended: statuses.filter((s) => s === 'suspended').length,
+          archived: statuses.filter((s) => s === 'archived').length,
         })
       })
       .catch((err) => setError(getFirebaseErrorMessage(err)))
@@ -134,14 +101,17 @@ function OverviewTab() {
   if (!data) return <p className="text-ink-500">Loading…</p>
 
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      <StatCard label="Active sellers" value={data.active_sellers} hint={`${data.total_sellers} total`} />
-      <StatCard label="Suspended sellers" value={data.suspended_sellers} />
-      <StatCard label="Total products" value={data.total_products} />
-      <StatCard label="Total customers" value={data.total_customers} />
-      <StatCard label="Total orders" value={data.total_orders} hint={`${data.orders_last_30_days} in last 30 days`} />
-      <StatCard label="GMV (all time)" value={`Rs. ${data.gmv_total.toLocaleString()}`} />
-      <StatCard label="GMV (30 days)" value={`Rs. ${data.gmv_last_30_days.toLocaleString()}`} />
+    <div>
+      <p className="mb-4 text-xs text-ink-500">
+        Account status only — no product, order, or sales figures here. See the Revenue tab for subscription
+        earnings, or Subscriptions for trial/paying breakdowns.
+      </p>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatCard label="Total businesses" value={data.total} />
+        <StatCard label="Active" value={data.active} />
+        <StatCard label="Suspended" value={data.suspended} tone={data.suspended > 0 ? 'amber' : 'brand'} />
+        <StatCard label="Archived" value={data.archived} />
+      </div>
     </div>
   )
 }
@@ -153,10 +123,6 @@ interface AdminCompany {
   trialEndsAt: Timestamp | null
   createdAt: Timestamp | null
   ownerName: string
-  ownerEmail: string | null
-  ownerPhone: string | null
-  productCount: number
-  orderCount: number
 }
 
 const STATUS_TONE: Record<BusinessStatus, 'green' | 'red' | 'amber' | 'gray'> = {
@@ -193,11 +159,7 @@ function CompaniesTab() {
       const rows = await Promise.all(
         snap.docs.map(async (d) => {
           const b = d.data() as BusinessDoc
-          const [ownerSnap, productCount, orderCount] = await Promise.all([
-            getDoc(doc(db, 'users', b.ownerUserId)),
-            getCountFromServer(query(collection(db, 'products'), where('businessId', '==', d.id))),
-            getCountFromServer(query(collection(db, 'orders'), where('businessId', '==', d.id))),
-          ])
+          const ownerSnap = await getDoc(doc(db, 'users', b.ownerUserId))
           const owner = ownerSnap.exists() ? (ownerSnap.data() as UserDoc) : null
           return {
             id: d.id,
@@ -206,10 +168,6 @@ function CompaniesTab() {
             trialEndsAt: b.trialEndsAt ?? null,
             createdAt: b.createdAt ?? null,
             ownerName: owner?.fullName ?? '—',
-            ownerEmail: owner?.email ?? null,
-            ownerPhone: owner?.phone ?? null,
-            productCount: productCount.data().count,
-            orderCount: orderCount.data().count,
           }
         }),
       )
@@ -283,9 +241,7 @@ function CompaniesTab() {
                 <tr key={c.id}>
                   <td className="px-4 py-3.5 align-top">
                     <p className="font-semibold text-ink-900">{c.name}</p>
-                    <p className="text-xs text-ink-500">
-                      {c.ownerName} · {c.ownerEmail || c.ownerPhone || '—'} · {c.productCount} products · {c.orderCount} orders
-                    </p>
+                    <p className="text-xs text-ink-500">{c.ownerName}</p>
                   </td>
                   <td className="px-4 py-3.5 align-top">
                     <Badge tone={STATUS_TONE[c.status]}>{c.status}</Badge>
@@ -338,53 +294,6 @@ function CompaniesTab() {
   )
 }
 
-type Range = 'today' | 'week' | 'month' | 'year' | 'all'
-const RANGES: { key: Range; label: string }[] = [
-  { key: 'today', label: 'Today' },
-  { key: 'week', label: 'Week' },
-  { key: 'month', label: 'Month' },
-  { key: 'year', label: 'Year' },
-  { key: 'all', label: 'All time' },
-]
-
-/** Start of the selected window, or null for "all time" (no lower bound). Same logic as
- *  DashboardHome.tsx's seller-facing range picker, kept as its own small copy here rather
- *  than a shared import so this admin page doesn't reach into a seller-dashboard file. */
-function rangeStart(range: Range): Date | null {
-  const now = new Date()
-  switch (range) {
-    case 'today': {
-      const d = new Date(now)
-      d.setHours(0, 0, 0, 0)
-      return d
-    }
-    case 'week': {
-      const d = new Date(now)
-      d.setDate(d.getDate() - 7)
-      return d
-    }
-    case 'month': {
-      const d = new Date(now)
-      d.setMonth(d.getMonth() - 1)
-      return d
-    }
-    case 'year': {
-      const d = new Date(now)
-      d.setFullYear(d.getFullYear() - 1)
-      return d
-    }
-    case 'all':
-      return null
-  }
-}
-
-interface RevenueRow {
-  businessId: string
-  businessName: string
-  orderCount: number
-  gmv: number
-}
-
 /** Flat Rs./month HerCommerce charges every active business — set from the System Settings
  *  tab (config/platform.monthlyPrice). Defaults to 0 until an admin fills it in, so MRR
  *  starts at Rs. 0 rather than guessing a number nobody entered. There's no per-tier pricing
@@ -406,58 +315,14 @@ interface MrrData {
 }
 
 /**
- * Two different kinds of "money" on one tab, deliberately kept apart: gross merchandise
- * value (what customers pay sellers through their storefronts — HerCommerce never touches
- * this) versus subscription revenue (what sellers pay HerCommerce itself to use the
- * platform). The MRR figure below is what HerCommerce actually earns — GMV is what moves
- * through it.
+ * What HerCommerce itself earns — subscription revenue only. There's no visibility here into
+ * store sales/GMV (that's business data about each seller's own customers, deliberately kept
+ * out of the superadmin) — just account-level subscription math.
  */
 function RevenueTab() {
-  const [range, setRange] = useState<Range>('month')
-  const [rows, setRows] = useState<RevenueRow[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
   const [mrrData, setMrrData] = useState<MrrData | null>(null)
   const [mrrError, setMrrError] = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
-    setRows(null)
-    setError(null)
-    async function load() {
-      try {
-        const start = rangeStart(range)
-        const ordersQuery = start
-          ? query(collection(db, 'orders'), where('createdAt', '>=', Timestamp.fromDate(start)))
-          : collection(db, 'orders')
-        const [ordersSnap, businessesSnap] = await Promise.all([getDocs(ordersQuery), getDocs(collection(db, 'businesses'))])
-        if (cancelled) return
-        const nameById = new Map(businessesSnap.docs.map((d) => [d.id, (d.data() as BusinessDoc).name]))
-        const byBusiness = new Map<string, { orderCount: number; gmv: number }>()
-        ordersSnap.docs.forEach((d) => {
-          const o = d.data() as OrderDoc
-          if (o.status === 'cancelled') return // not a real sale — same reasoning as DashboardHome's sales total
-          const entry = byBusiness.get(o.businessId) ?? { orderCount: 0, gmv: 0 }
-          entry.orderCount += 1
-          entry.gmv += o.total
-          byBusiness.set(o.businessId, entry)
-        })
-        const nextRows: RevenueRow[] = Array.from(byBusiness.entries())
-          .map(([businessId, v]) => ({ businessId, businessName: nameById.get(businessId) ?? '(deleted business)', ...v }))
-          .sort((a, b) => b.gmv - a.gmv)
-        setRows(nextRows)
-      } catch (err) {
-        if (!cancelled) setError(getFirebaseErrorMessage(err))
-      }
-    }
-    load()
-    return () => {
-      cancelled = true
-    }
-  }, [range])
-
-  // MRR doesn't depend on the GMV date range above — it's a snapshot of who's paying for
-  // what *right now*, not a historical figure — so it loads independently, once.
   useEffect(() => {
     const now = Date.now()
     Promise.all([loadMonthlyPrice(), getDocs(collection(db, 'businesses'))])
@@ -478,10 +343,6 @@ function RevenueTab() {
       .catch((err) => setMrrError(getFirebaseErrorMessage(err)))
   }, [])
 
-  const totalGmv = rows?.reduce((sum, r) => sum + r.gmv, 0) ?? 0
-  const totalOrders = rows?.reduce((sum, r) => sum + r.orderCount, 0) ?? 0
-  const aov = totalOrders > 0 ? totalGmv / totalOrders : 0
-
   return (
     <div>
       <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink-500">
@@ -490,6 +351,7 @@ function RevenueTab() {
       <p className="mb-4 text-xs text-ink-500">
         No payment gateway is wired into this app, so nothing here confirms a payment was actually received — this
         multiplies the number of active, past-trial accounts by the flat monthly price you set in System Settings.
+        Store sales (GMV) aren't shown here — that's each seller's own business data, not HerCommerce's.
       </p>
       {mrrError && (
         <div className="mb-4">
@@ -497,9 +359,9 @@ function RevenueTab() {
         </div>
       )}
       {mrrData === null ? (
-        <p className="mb-8 text-ink-500">Loading…</p>
+        <p className="text-ink-500">Loading…</p>
       ) : (
-        <div className="mb-8">
+        <div>
           <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
             <StatCard label="MRR" value={`Rs. ${mrrData.mrr.toLocaleString()}`} />
             <StatCard label="ARR (MRR × 12)" value={`Rs. ${(mrrData.mrr * 12).toLocaleString()}`} />
@@ -513,74 +375,6 @@ function RevenueTab() {
             </p>
           )}
         </div>
-      )}
-
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-500">Gross merchandise value</h2>
-        <div className="flex gap-1.5 overflow-x-auto pb-0.5">
-          {RANGES.map((r) => (
-            <button
-              key={r.key}
-              onClick={() => setRange(r.key)}
-              className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${
-                range === r.key ? 'bg-brand-600 text-white' : 'bg-white text-ink-700'
-              }`}
-            >
-              {r.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <p className="mb-4 text-xs text-ink-500">
-        This is gross merchandise value across every store's orders — what customers pay sellers, not money
-        HerCommerce earns. See the subscription revenue figure above for that.
-      </p>
-
-      {error && (
-        <div className="mb-4">
-          <Banner tone="danger">{error}</Banner>
-        </div>
-      )}
-
-      {rows === null ? (
-        <p className="text-ink-500">Loading…</p>
-      ) : (
-        <>
-          <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <StatCard label="GMV" value={`Rs. ${totalGmv.toLocaleString()}`} />
-            <StatCard label="Orders" value={totalOrders} />
-            <StatCard label="Avg. order value" value={`Rs. ${Math.round(aov).toLocaleString()}`} />
-          </div>
-
-          <Card className="overflow-x-auto p-0">
-            <table className="w-full min-w-[520px] border-collapse text-sm">
-              <thead>
-                <tr className="border-b border-black/5 text-left text-xs font-semibold uppercase tracking-wide text-ink-500">
-                  <th className="px-4 py-3">Company</th>
-                  <th className="px-4 py-3">Orders</th>
-                  <th className="px-4 py-3">GMV</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-black/5">
-                {rows.length === 0 && (
-                  <tr>
-                    <td colSpan={3} className="px-4 py-6 text-center text-ink-500">
-                      No orders in this range.
-                    </td>
-                  </tr>
-                )}
-                {rows.map((r) => (
-                  <tr key={r.businessId}>
-                    <td className="px-4 py-3 font-medium text-ink-900">{r.businessName}</td>
-                    <td className="px-4 py-3 text-ink-700">{r.orderCount}</td>
-                    <td className="px-4 py-3 font-semibold text-ink-900">Rs. {r.gmv.toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </Card>
-        </>
       )}
     </div>
   )
@@ -661,109 +455,6 @@ function SubscriptionsTab() {
           )
         })}
       </Card>
-    </div>
-  )
-}
-
-interface HealthIssue {
-  key: string
-  label: string
-  count: number
-  items: string[]
-}
-
-/**
- * Operational checks computed from live Firestore data — there's no error/log monitoring in
- * this card-free build (no server to monitor), so "platform health" here means "what needs a
- * human's attention" rather than uptime/latency. Every number is a real query result, not a
- * placeholder.
- */
-function PlatformHealthTab() {
-  const [issues, setIssues] = useState<HealthIssue[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    async function load() {
-      try {
-        const [businessesSnap, productsSnap, ordersSnap] = await Promise.all([
-          getDocs(collection(db, 'businesses')),
-          getDocs(collection(db, 'products')),
-          getDocs(collection(db, 'orders')),
-        ])
-        const businesses = businessesSnap.docs.map((d) => ({ id: d.id, ...(d.data() as BusinessDoc) }))
-        const activeBusinesses = businesses.filter((b) => b.status === 'active')
-        const products = productsSnap.docs.map((d) => d.data() as ProductDoc)
-        const orders = ordersSnap.docs.map((d) => d.data() as OrderDoc)
-
-        const productCountByBusiness = new Map<string, number>()
-        products.forEach((p) => productCountByBusiness.set(p.businessId, (productCountByBusiness.get(p.businessId) ?? 0) + 1))
-
-        const emptyStores = activeBusinesses.filter((b) => !productCountByBusiness.get(b.id))
-        const noWhatsapp = activeBusinesses.filter((b) => !b.whatsappNumber)
-        const outOfStockCount = products.filter((p) => p.status === 'out_of_stock').length
-
-        const staleCutoff = Date.now() - 48 * 60 * 60 * 1000
-        const nameById = new Map(businesses.map((b) => [b.id, b.name]))
-        const staleOrders = orders.filter(
-          (o) => (o.status === 'new' || o.status === 'confirmed') && (o.createdAt?.toMillis() ?? 0) < staleCutoff,
-        )
-
-        setIssues([
-          {
-            key: 'empty',
-            label: 'Active stores with zero products',
-            count: emptyStores.length,
-            items: emptyStores.map((b) => b.name),
-          },
-          {
-            key: 'whatsapp',
-            label: 'Active stores with no WhatsApp number set',
-            count: noWhatsapp.length,
-            items: noWhatsapp.map((b) => b.name),
-          },
-          { key: 'stock', label: 'Products out of stock, platform-wide', count: outOfStockCount, items: [] },
-          {
-            key: 'stale',
-            label: 'Orders unactioned for 48+ hours (still New/Confirmed)',
-            count: staleOrders.length,
-            items: staleOrders.slice(0, 10).map((o) => `${o.orderNumber} · ${nameById.get(o.businessId) ?? '—'}`),
-          },
-        ])
-      } catch (err) {
-        setError(getFirebaseErrorMessage(err))
-      }
-    }
-    load()
-  }, [])
-
-  if (error) return <Banner tone="danger">{error}</Banner>
-  if (!issues) return <p className="text-ink-500">Loading…</p>
-
-  return (
-    <div>
-      <p className="mb-4 text-xs text-ink-500">
-        There's no error or uptime monitoring wired into this card-free build — these are data-quality checks
-        run against live Firestore data, surfacing what needs a human to step in.
-      </p>
-      <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {issues.map((i) => (
-          <StatCard key={i.key} label={i.label} value={i.count} tone={i.count > 0 ? 'amber' : 'brand'} />
-        ))}
-      </div>
-      {issues
-        .filter((i) => i.items.length > 0)
-        .map((i) => (
-          <div key={i.key} className="mb-6">
-            <h3 className="mb-2 text-sm font-semibold text-ink-900">{i.label}</h3>
-            <Card className="divide-y divide-black/5">
-              {i.items.map((name, idx) => (
-                <p key={idx} className="px-4 py-2.5 text-sm text-ink-700">
-                  {name}
-                </p>
-              ))}
-            </Card>
-          </div>
-        ))}
     </div>
   )
 }
