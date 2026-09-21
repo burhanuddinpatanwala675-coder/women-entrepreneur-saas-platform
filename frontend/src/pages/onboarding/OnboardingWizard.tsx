@@ -38,7 +38,7 @@ export default function OnboardingWizard() {
   const [step, setStep] = useState(0)
   const [categories, setCategories] = useState<CategoryTree[]>([])
   const [loadingCategories, setLoadingCategories] = useState(true)
-  const [categoryId, setCategoryId] = useState<string | null>(null)
+  const [categoryIds, setCategoryIds] = useState<string[]>([])
   const [business, setBusiness] = useState<WizardBusiness | null>(null)
   const [product, setProduct] = useState<WizardProduct | null>(null)
 
@@ -87,15 +87,17 @@ export default function OnboardingWizard() {
           <CategoryStep
             categories={categories}
             loading={loadingCategories}
-            selected={categoryId}
-            onSelect={setCategoryId}
+            selected={categoryIds}
+            onToggle={(id) =>
+              setCategoryIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+            }
             onNext={() => setStep(1)}
           />
         )}
-        {step === 1 && categoryId && user && (
+        {step === 1 && categoryIds.length > 0 && user && (
           <BusinessStep
             uid={user.uid}
-            categoryId={categoryId}
+            categoryIds={categoryIds}
             onBack={() => setStep(0)}
             onNext={(b) => {
               setBusiness(b)
@@ -125,19 +127,21 @@ function CategoryStep({
   categories,
   loading,
   selected,
-  onSelect,
+  onToggle,
   onNext,
 }: {
   categories: CategoryTree[]
   loading: boolean
-  selected: string | null
-  onSelect: (id: string) => void
+  selected: string[]
+  onToggle: (id: string) => void
   onNext: () => void
 }) {
   return (
     <div>
       <h1 className="text-center text-2xl font-bold text-ink-900">What do you sell?</h1>
-      <p className="mt-1.5 text-center text-sm text-ink-500">Pick the category that best describes your business.</p>
+      <p className="mt-1.5 text-center text-sm text-ink-500">
+        Pick every category that describes your business — you can choose more than one.
+      </p>
 
       {loading ? (
         <div className="mt-10 flex justify-center">
@@ -145,23 +149,32 @@ function CategoryStep({
         </div>
       ) : (
         <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3">
-          {categories.map((cat) => (
-            <button
-              key={cat.id}
-              onClick={() => onSelect(cat.id)}
-              className={`flex flex-col items-center gap-2 rounded-2xl border-2 bg-white p-4 text-center transition-colors ${
-                selected === cat.id ? 'border-brand-600 bg-brand-50' : 'border-transparent hover:border-brand-200'
-              }`}
-            >
-              <span className="text-3xl">{cat.icon}</span>
-              <span className="text-sm font-semibold text-ink-900">{cat.name}</span>
-            </button>
-          ))}
+          {categories.map((cat) => {
+            const isSelected = selected.includes(cat.id)
+            return (
+              <button
+                key={cat.id}
+                onClick={() => onToggle(cat.id)}
+                aria-pressed={isSelected}
+                className={`relative flex flex-col items-center gap-2 rounded-2xl border-2 bg-white p-4 text-center transition-colors ${
+                  isSelected ? 'border-brand-600 bg-brand-50' : 'border-transparent hover:border-brand-200'
+                }`}
+              >
+                {isSelected && (
+                  <span className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded-full bg-brand-600 text-xs text-white">
+                    ✓
+                  </span>
+                )}
+                <span className="text-3xl">{cat.icon}</span>
+                <span className="text-sm font-semibold text-ink-900">{cat.name}</span>
+              </button>
+            )
+          })}
         </div>
       )}
 
-      <Button fullWidth size="lg" className="mt-8" disabled={!selected} onClick={onNext}>
-        Continue
+      <Button fullWidth size="lg" className="mt-8" disabled={selected.length === 0} onClick={onNext}>
+        Continue{selected.length > 0 ? ` (${selected.length} selected)` : ''}
       </Button>
     </div>
   )
@@ -186,7 +199,7 @@ const DEFAULT_STORE_SETTINGS = {
  */
 async function createBusinessWithUniqueSlug(
   uid: string,
-  input: { name: string; shortDescription: string; categoryId: string },
+  input: { name: string; shortDescription: string; categoryIds: string[] },
 ): Promise<string> {
   let slug = slugify(input.name)
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -203,7 +216,7 @@ async function createBusinessWithUniqueSlug(
           name: input.name,
           slug,
           shortDescription: input.shortDescription || null,
-          categoryId: input.categoryId,
+          categoryIds: input.categoryIds,
           logoUrl: null,
           coverImageUrl: null,
           whatsappNumber: null,
@@ -244,12 +257,12 @@ async function createBusinessWithUniqueSlug(
 
 function BusinessStep({
   uid,
-  categoryId,
+  categoryIds,
   onBack,
   onNext,
 }: {
   uid: string
-  categoryId: string
+  categoryIds: string[]
   onBack: () => void
   onNext: (b: WizardBusiness) => void
 }) {
@@ -262,7 +275,7 @@ function BusinessStep({
     setError(null)
     setLoading(true)
     try {
-      const slug = await createBusinessWithUniqueSlug(uid, { name, shortDescription: description, categoryId })
+      const slug = await createBusinessWithUniqueSlug(uid, { name, shortDescription: description, categoryIds })
       onNext({ id: slug, name, storefrontPath: `/store/${slug}` })
     } catch (err) {
       setError(getFirebaseErrorMessage(err))

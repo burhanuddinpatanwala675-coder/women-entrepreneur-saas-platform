@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, Outlet, useParams } from 'react-router-dom'
-import { doc, getDoc } from 'firebase/firestore'
+import { collection, doc, documentId, getDoc, getDocs, query, where } from 'firebase/firestore'
 import { db } from '@/firebase/client'
 import type { BusinessDoc, CategoryDoc } from '@/firebase/types'
 import { FullScreenSpinner } from '@/components/ui'
@@ -34,12 +34,17 @@ export default function StorefrontLayout() {
           return
         }
         const data = snap.data() as BusinessDoc
-        let categoryName: string | null = null
-        if (data.categoryId) {
-          const catSnap = await getDoc(doc(db, 'categories', data.categoryId))
-          if (catSnap.exists()) categoryName = (catSnap.data() as CategoryDoc).name
+        let categoryNames: string[] = []
+        // Older business docs from before multi-category existed may not have this field —
+        // read as `?? []` rather than assuming it's present (see BusinessDoc in firebase/types.ts).
+        const ids = data.categoryIds ?? []
+        if (ids.length > 0) {
+          const catsSnap = await getDocs(query(collection(db, 'categories'), where(documentId(), 'in', ids.slice(0, 30))))
+          const nameById = new Map(catsSnap.docs.map((d) => [d.id, (d.data() as CategoryDoc).name]))
+          // Preserve the order the seller picked them in, rather than Firestore's query order.
+          categoryNames = ids.map((id) => nameById.get(id)).filter((name): name is string => !!name)
         }
-        if (!cancelled) setBusiness({ id: snap.id, ...data, categoryName })
+        if (!cancelled) setBusiness({ id: snap.id, ...data, categoryNames })
       })
       .catch(() => !cancelled && setNotFound(true))
     return () => {
@@ -88,7 +93,9 @@ export default function StorefrontLayout() {
               <Link to={`/store/${slug}`}>
                 <h1 className="text-xl font-bold text-ink-900">{business.name}</h1>
               </Link>
-              {business.categoryName && <p className="text-sm text-ink-500">{business.categoryName}</p>}
+              {business.categoryNames.length > 0 && (
+                <p className="text-sm text-ink-500">{business.categoryNames.join(' · ')}</p>
+              )}
             </div>
           </div>
           {business.shortDescription && <p className="mt-3 text-sm text-ink-700">{business.shortDescription}</p>}

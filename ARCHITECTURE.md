@@ -199,7 +199,7 @@ businesses/{slug}                        — doc ID = the business's own slug (d
                                      and forbid ever changing it after
   name, slug (mirrors the doc ID, kept as a field too for easy display)
   shortDescription
-  categoryId
+  categoryIds (array — a business can belong to more than one category)
   logoUrl, coverImageUrl
   whatsappNumber, contactEmail, contactPhone
   socialLinks               map {instagram, facebook, tiktok, ...}

@@ -56,7 +56,11 @@ export interface BusinessDoc {
   name: string
   slug: string
   shortDescription: string | null
-  categoryId: string | null
+  /** One or more categories chosen at onboarding — a business can list itself under
+   *  multiple categories (e.g. a store that sells both "Fashion" and "Beauty"). Older
+   *  business docs created before multi-category existed may still have it empty —
+   *  read as `business.categoryIds ?? []`, never assume it's present. */
+  categoryIds: string[]
   logoUrl: string | null
   coverImageUrl: string | null
   whatsappNumber: string | null
