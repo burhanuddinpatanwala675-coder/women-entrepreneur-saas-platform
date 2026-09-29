@@ -4,6 +4,7 @@ import { Timestamp, addDoc, collection, deleteDoc, doc, getDoc, getDocs, serverT
 import { db } from '@/firebase/client'
 import { slugify } from '@/firebase/slugify'
 import { getFirebaseErrorMessage } from '@/firebase/errors'
+import { toWhatsappDigits } from '@/firebase/whatsapp'
 import type { BusinessDoc, BusinessStatus, CategoryDoc, UserDoc } from '@/firebase/types'
 import { useAuth } from '@/auth/AuthContext'
 import { Badge, Banner, Button, Card, Input, Label, StatCard, Textarea } from '@/components/ui'
@@ -123,6 +124,7 @@ interface AdminCompany {
   trialEndsAt: Timestamp | null
   createdAt: Timestamp | null
   ownerName: string
+  ownerPhone: string | null
 }
 
 const STATUS_TONE: Record<BusinessStatus, 'green' | 'red' | 'amber' | 'gray'> = {
@@ -136,6 +138,27 @@ const TRIAL_EXTENSION_DAYS = 14
 
 function formatDate(ts: Timestamp | null): string {
   return ts ? ts.toDate().toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
+}
+
+/**
+ * A ready-to-send WhatsApp message for the superadmin to check in with a business owner —
+ * same "one tap instead of typing it out fresh" reasoning as the seller-facing canned
+ * messages in firebase/whatsapp.ts. The wording adapts to where the business actually is:
+ * suspended/archived (are they still interested?), still on their free trial (just checking
+ * in), or past their trial and presumably billable (a payment reminder). Null when there's
+ * no owner phone on file to message.
+ */
+function buildOwnerCheckinLink(company: AdminCompany): string | null {
+  if (!company.ownerPhone) return null
+  let message: string
+  if (company.status !== 'active') {
+    message = `Hi! This is HerCommerce reaching out about your store "${company.name}" — just checking in to see if you'd like to continue with us.`
+  } else if (company.trialEndsAt && company.trialEndsAt.toMillis() > Date.now()) {
+    message = `Hi! Just checking in on your free trial for "${company.name}" on HerCommerce — let us know if you have any questions, or if you'd like to continue after your trial ends.`
+  } else {
+    message = `Hi! This is a friendly reminder about your HerCommerce subscription payment for "${company.name}". Let us know if you'd like to continue, or reach out if you have any questions.`
+  }
+  return `https://wa.me/${toWhatsappDigits(company.ownerPhone)}?text=${encodeURIComponent(message)}`
 }
 
 /**
@@ -168,6 +191,7 @@ function CompaniesTab() {
             trialEndsAt: b.trialEndsAt ?? null,
             createdAt: b.createdAt ?? null,
             ownerName: owner?.fullName ?? '—',
+            ownerPhone: owner?.phone ?? null,
           }
         }),
       )
@@ -237,11 +261,13 @@ function CompaniesTab() {
           <tbody className="divide-y divide-black/5">
             {companies.map((c) => {
               const busy = busyId === c.id
+              const checkinLink = buildOwnerCheckinLink(c)
               return (
                 <tr key={c.id}>
                   <td className="px-4 py-3.5 align-top">
                     <p className="font-semibold text-ink-900">{c.name}</p>
                     <p className="text-xs text-ink-500">{c.ownerName}</p>
+                    <p className="text-xs text-ink-500">{c.ownerPhone ?? 'No phone on file'}</p>
                   </td>
                   <td className="px-4 py-3.5 align-top">
                     <Badge tone={STATUS_TONE[c.status]}>{c.status}</Badge>
@@ -250,6 +276,16 @@ function CompaniesTab() {
                   <td className="px-4 py-3.5 align-top text-ink-700">{formatDate(c.createdAt)}</td>
                   <td className="px-4 py-3.5 align-top">
                     <div className="flex flex-wrap gap-2">
+                      {checkinLink && (
+                        <a
+                          href={checkinLink}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="tap-target inline-flex items-center justify-center gap-1.5 rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm font-semibold text-ink-900 hover:bg-cream-100"
+                        >
+                          💬 WhatsApp owner
+                        </a>
+                      )}
                       {c.status !== 'active' && (
                         <Button
                           size="sm"
